@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+#
+# groxy — двухуровневый WireGuard с whitelist-маршрутизацией.
+#
+# Bridge (RU VPS) принимает клиентов через wg0, маркирует трафик iptables'ом и
+# заворачивает в wg1 → portal (foreign VPS) всё, кроме доменов из ipset
+# vpn_domains. Так российские сервисы видят российский IP, остальное идёт
+# через portal.
+#
+# Этот файл — диспетчер подкоманд. Реальная логика живёт в lib/.
+
+set -euo pipefail
+
+readonly GROXY_VERSION='0.1.0-dev'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly LIB_DIR="${SCRIPT_DIR}/lib"
+
+# shellcheck source=lib/common.sh
+source "${LIB_DIR}/common.sh"
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+
+usage() {
+    cat <<'EOF'
+groxy — двухуровневый WireGuard с whitelist-маршрутизацией.
+
+Usage: groxy <command> [args...]
+
+Commands:
+  init <portal|bridge> [flags]   Первичная установка роли.
+  apply                          Перегенерировать конфиги из /etc/groxy/.
+  status                         Показать роль, сервисы, peer'ы.
+  uninstall [--yes]              Снести установку (бэкап в /etc/groxy.bak.<ts>).
+
+  portal <subcommand>            Управление peer'ами portal'а.
+  bridge <subcommand>            Управление peer'ами, клиентами, whitelist'ом bridge'а.
+
+  version                        Показать версию.
+  help                           Показать эту справку.
+
+Запустите 'groxy portal' или 'groxy bridge' без аргументов,
+чтобы увидеть список их подкоманд.
+EOF
+}
+
+usage_portal() {
+    cat <<'EOF'
+Usage: groxy portal <subcommand> [args...]
+
+Subcommands:
+  add-bridge <bridge-name>                          Создать peer и напечатать portal profile.
+  accept-bridge <bridge-name> --pubkey=<key>        Активировать peer по pubkey'ю bridge'а.
+  remove-bridge <bridge-name> [--yes]               Удалить peer.
+  list-bridges                                      Показать зарегистрированные bridge'и.
+EOF
+}
+
+usage_bridge() {
+    cat <<'EOF'
+Usage: groxy bridge <subcommand> [args...]
+
+Subcommands:
+  add-portal <portal-name> --profile=<file>         Импортировать portal profile.
+  use-portal <portal-name>                          Переключить активный portal.
+  list-portals                                      Показать доступные portal'ы.
+  remove-portal <portal-name> [--yes]               Удалить portal profile.
+
+  add-client <client-name>                          Создать WG-клиента, напечатать конфиг.
+  remove-client <client-name> [--yes]               Удалить клиента.
+  list-clients                                      Показать клиентов.
+
+  whitelist <update|reload|set-source>              Управление whitelist'ом доменов.
+EOF
+}
+
+usage_bridge_whitelist() {
+    cat <<'EOF'
+Usage: groxy bridge whitelist <subcommand> [args...]
+
+Subcommands:
+  update                Скачать свежий opencck-список и перезапустить dnsmasq.
+  reload                Перечитать custom.txt / custom-ips.txt.
+  set-source <url>      Сменить URL источника opencck.
+EOF
+}
+
+version() {
+    printf 'groxy %s\n' "${GROXY_VERSION}"
+}
+
+# ---------------------------------------------------------------------------
+# Stub helper
+# ---------------------------------------------------------------------------
+
+# Каждая ещё-не-реализованная подкоманда вызывает stub. Печатает в stderr
+# имя вызвавшей функции и аргументы — чтобы видеть, что dispatcher отработал.
+stub() {
+    log "stub: ${FUNCNAME[1]}($*)"
+}
+
+# ---------------------------------------------------------------------------
+# Top-level commands
+# ---------------------------------------------------------------------------
+
+cmd_init() {
+    local role="${1:-}"
+    case "${role}" in
+        portal|bridge)
+            shift
+            stub "${role}" "$@"
+            ;;
+        ''|-h|--help|help)
+            printf 'Usage: groxy init <portal|bridge> [flags]\n' >&2
+            [[ -z "${role}" ]] && exit 2 || exit 0
+            ;;
+        *)
+            die "unknown role: ${role} (expected: portal|bridge)"
+            ;;
+    esac
+}
+
+cmd_apply() {
+    stub "$@"
+}
+
+cmd_status() {
+    stub "$@"
+}
+
+cmd_uninstall() {
+    stub "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Portal subcommands
+# ---------------------------------------------------------------------------
+
+cmd_portal() {
+    local sub="${1:-}"
+    shift || true
+    case "${sub}" in
+        add-bridge)      portal_add_bridge "$@" ;;
+        accept-bridge)   portal_accept_bridge "$@" ;;
+        remove-bridge)   portal_remove_bridge "$@" ;;
+        list-bridges)    portal_list_bridges "$@" ;;
+        ''|-h|--help|help)
+            usage_portal
+            [[ -z "${sub}" ]] && exit 2 || exit 0
+            ;;
+        *)
+            die "unknown portal subcommand: ${sub}"
+            ;;
+    esac
+}
+
+portal_add_bridge()    { stub "$@"; }
+portal_accept_bridge() { stub "$@"; }
+portal_remove_bridge() { stub "$@"; }
+portal_list_bridges()  { stub "$@"; }
+
+# ---------------------------------------------------------------------------
+# Bridge subcommands
+# ---------------------------------------------------------------------------
+
+cmd_bridge() {
+    local sub="${1:-}"
+    shift || true
+    case "${sub}" in
+        add-portal)      bridge_add_portal "$@" ;;
+        use-portal)      bridge_use_portal "$@" ;;
+        list-portals)    bridge_list_portals "$@" ;;
+        remove-portal)   bridge_remove_portal "$@" ;;
+        add-client)      bridge_add_client "$@" ;;
+        remove-client)   bridge_remove_client "$@" ;;
+        list-clients)    bridge_list_clients "$@" ;;
+        whitelist)       cmd_bridge_whitelist "$@" ;;
+        ''|-h|--help|help)
+            usage_bridge
+            [[ -z "${sub}" ]] && exit 2 || exit 0
+            ;;
+        *)
+            die "unknown bridge subcommand: ${sub}"
+            ;;
+    esac
+}
+
+bridge_add_portal()    { stub "$@"; }
+bridge_use_portal()    { stub "$@"; }
+bridge_list_portals()  { stub "$@"; }
+bridge_remove_portal() { stub "$@"; }
+bridge_add_client()    { stub "$@"; }
+bridge_remove_client() { stub "$@"; }
+bridge_list_clients()  { stub "$@"; }
+
+cmd_bridge_whitelist() {
+    local sub="${1:-}"
+    shift || true
+    case "${sub}" in
+        update)       bridge_whitelist_update "$@" ;;
+        reload)       bridge_whitelist_reload "$@" ;;
+        set-source)   bridge_whitelist_set_source "$@" ;;
+        ''|-h|--help|help)
+            usage_bridge_whitelist
+            [[ -z "${sub}" ]] && exit 2 || exit 0
+            ;;
+        *)
+            die "unknown whitelist subcommand: ${sub}"
+            ;;
+    esac
+}
+
+bridge_whitelist_update()     { stub "$@"; }
+bridge_whitelist_reload()     { stub "$@"; }
+bridge_whitelist_set_source() { stub "$@"; }
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+main() {
+    local cmd="${1:-}"
+    shift || true
+    case "${cmd}" in
+        init)        cmd_init "$@" ;;
+        apply)       cmd_apply "$@" ;;
+        status)      cmd_status "$@" ;;
+        uninstall)   cmd_uninstall "$@" ;;
+        portal)      cmd_portal "$@" ;;
+        bridge)      cmd_bridge "$@" ;;
+        version|-v|--version)  version ;;
+        ''|help|-h|--help)
+            usage
+            [[ -z "${cmd}" ]] && exit 2 || exit 0
+            ;;
+        *)
+            die "unknown command: ${cmd} (try: groxy help)"
+            ;;
+    esac
+}
+
+main "$@"
