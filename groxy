@@ -167,10 +167,7 @@ cmd_portal() {
     esac
 }
 
-portal_add_bridge()    { stub "$@"; }
-portal_accept_bridge() { stub "$@"; }
-portal_remove_bridge() { stub "$@"; }
-portal_list_bridges()  { stub "$@"; }
+# portal_add_bridge / accept_bridge / remove_bridge / list_bridges defined in lib/portal.sh
 
 # ---------------------------------------------------------------------------
 # Bridge subcommands
