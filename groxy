@@ -25,6 +25,8 @@ source "${LIB_DIR}/system.sh"
 source "${LIB_DIR}/wireguard.sh"
 # shellcheck source=lib/portal.sh
 source "${LIB_DIR}/portal.sh"
+# shellcheck source=lib/bridge.sh
+source "${LIB_DIR}/bridge.sh"
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -121,7 +123,7 @@ cmd_init() {
             ;;
         bridge)
             shift
-            stub "${role}" "$@"
+            bridge_init "$@"
             ;;
         ''|-h|--help|help)
             printf 'Usage: groxy init <portal|bridge> [flags]\n' >&2

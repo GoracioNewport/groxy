@@ -30,24 +30,6 @@ _portal_subnet_to_server_ip() {
     printf '%s.1/%s\n' "${base%.*}" "${mask}"
 }
 
-# Validate a bridge name. Allowed: alnum, dot, dash, underscore; 1-63 chars;
-# must start with alnum (avoid leading dash that could confuse CLI parsers).
-_portal_validate_name() {
-    local name="$1"
-    if [[ ! "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]]; then
-        die "invalid bridge name '${name}' (allowed: [A-Za-z0-9._-], 1-63 chars, alnum first)"
-    fi
-}
-
-# Validate a WireGuard public/preshared key — 32-byte base64, 44 chars
-# ending in '='.
-_portal_validate_pubkey() {
-    local key="$1"
-    if [[ ! "${key}" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
-        die "invalid WireGuard pubkey: '${key}'"
-    fi
-}
-
 # Print the "<a>.<b>.<c>." prefix of a /24-style subnet.
 # 10.77.77.0/24 → 10.77.77.
 _portal_subnet_base() {
@@ -226,7 +208,7 @@ portal_add_bridge() {
     done
     [[ -n "${name}" ]] \
         || die "usage: groxy portal add-bridge <name> [--portal-name=<friendly-name>]"
-    _portal_validate_name "${name}"
+    validate_peer_name "${name}"
 
     local cfg_dir="${GROXY_DIR}/portal"
     [[ -f "${cfg_dir}/server.env" ]] \
@@ -291,8 +273,8 @@ portal_accept_bridge() {
     done
     [[ -n "${name}" ]]   || die "usage: groxy portal accept-bridge <name> --pubkey=<key>"
     [[ -n "${pubkey}" ]] || die "missing --pubkey=<key>"
-    _portal_validate_name "${name}"
-    _portal_validate_pubkey "${pubkey}"
+    validate_peer_name "${name}"
+    validate_wg_key "${pubkey}" "public key"
 
     local peer_file="${GROXY_DIR}/portal/bridges/${name}.peer"
     [[ -e "${peer_file}" ]] \
@@ -358,7 +340,7 @@ portal_remove_bridge() {
         esac
     done
     [[ -n "${name}" ]] || die "usage: groxy portal remove-bridge <name> [--yes]"
-    _portal_validate_name "${name}"
+    validate_peer_name "${name}"
 
     local peer_file="${GROXY_DIR}/portal/bridges/${name}.peer"
     [[ -e "${peer_file}" ]] || die "bridge '${name}' not registered"

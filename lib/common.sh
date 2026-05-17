@@ -27,3 +27,21 @@ require_root() {
 has_command() {
     command -v "$1" >/dev/null 2>&1
 }
+
+# Validate a peer name (used for both portal-bridges and bridge-portals).
+# Allowed: alnum/dot/dash/underscore, 1-63 chars, first char alnum.
+validate_peer_name() {
+    local name="$1"
+    if [[ ! "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]]; then
+        die "invalid peer name '${name}' (allowed: [A-Za-z0-9._-], 1-63 chars, alnum first)"
+    fi
+}
+
+# Validate a WireGuard key — public, private or preshared. All are 32-byte
+# base64 strings: 43 chars from [A-Za-z0-9+/] plus a trailing '='.
+validate_wg_key() {
+    local key="$1" label="${2:-key}"
+    if [[ ! "${key}" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
+        die "invalid WireGuard ${label}: '${key}'"
+    fi
+}
