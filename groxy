@@ -19,6 +19,12 @@ readonly LIB_DIR="${SCRIPT_DIR}/lib"
 
 # shellcheck source=lib/common.sh
 source "${LIB_DIR}/common.sh"
+# shellcheck source=lib/system.sh
+source "${LIB_DIR}/system.sh"
+# shellcheck source=lib/wireguard.sh
+source "${LIB_DIR}/wireguard.sh"
+# shellcheck source=lib/portal.sh
+source "${LIB_DIR}/portal.sh"
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -109,7 +115,11 @@ stub() {
 cmd_init() {
     local role="${1:-}"
     case "${role}" in
-        portal|bridge)
+        portal)
+            shift
+            portal_init "$@"
+            ;;
+        bridge)
             shift
             stub "${role}" "$@"
             ;;

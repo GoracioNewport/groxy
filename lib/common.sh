@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Shared helpers. Sourced by the cascade-vpn dispatcher and lib modules.
+# Shared helpers. Sourced by the groxy dispatcher and lib modules.
 # Do not execute directly.
+
+# Root of the declarative state. Overridable via env for testing.
+readonly GROXY_DIR="${GROXY_DIR:-/etc/groxy}"
 
 # Log to stderr with an ISO-8601 timestamp.
 log() {
@@ -16,7 +19,7 @@ die() {
 # Abort unless the effective UID is root.
 require_root() {
     if [[ ${EUID} -ne 0 ]]; then
-        die "this command must be run as root (try: sudo $0 $*)"
+        die "this command must be run as root (use sudo)"
     fi
 }
 
