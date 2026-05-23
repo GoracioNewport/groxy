@@ -124,9 +124,8 @@ bridge_init_dns() {
     apt_install dnsmasq
     bridge_ensure_whitelist_dir
     bridge_ensure_geoip_dir
+    bridge_ensure_settings
     bridge_render_dnsmasq_conf
-    bridge_render_custom_conf
-    bridge_render_opencck_conf
 
     systemctl enable dnsmasq >/dev/null 2>&1
     if systemctl is-active --quiet dnsmasq; then
@@ -141,6 +140,10 @@ bridge_init_dns() {
     # суточный таймер (timer на :00 + рандомизация ≤15min).
     log "first GeoIP feed refresh"
     bridge_geoip_update
+
+    # Применяем settings: рендерим dnsmasq.d-файлы и заполняем ipset
+    # согласно текущим тоггалам.
+    bridge_apply_settings
 }
 
 # `groxy bridge whitelist reload` — re-render 50-custom.conf and
@@ -149,16 +152,8 @@ bridge_whitelist_reload() {
     require_root
     local dir="${GROXY_DIR}/bridge/whitelist"
     [[ -d "${dir}" ]] || die "whitelist not initialised — run 'groxy init bridge' first"
-    log "rendering ${BRIDGE_DNSMASQ_CUSTOM_CONF} from custom.txt"
-    bridge_render_custom_conf
-    log "rendering ${BRIDGE_DNSMASQ_OPENCCK_CONF} from opencck.txt"
-    bridge_render_opencck_conf
-    # systemctl reload (SIGHUP) НЕ всегда сбрасывает DNS-кэш в dnsmasq 2.91:
-    # ранее закэшированный домен (например запрошенный до добавления в whitelist)
-    # продолжит резолвиться без триггера ipset= директивы. Restart гарантирует
-    # чистую таблицу.
-    log "restarting dnsmasq (flushes cache)"
-    systemctl restart dnsmasq
+    log "applying settings (respects opencck/custom/geoip toggles)"
+    bridge_apply_settings
 }
 
 # `groxy bridge whitelist set-source <url>` — persist the opencck-style
@@ -190,6 +185,13 @@ bridge_whitelist_update() {
     require_root
     local dir="${GROXY_DIR}/bridge/whitelist"
     [[ -d "${dir}" ]] || die "whitelist not initialised — run 'groxy init bridge' first"
+
+    local WHITELIST_OPENCCK WHITELIST_CUSTOM WHITELIST_GEOIP
+    bridge_settings_load
+    if [[ "${WHITELIST_OPENCCK}" != 'on' ]]; then
+        log "WHITELIST_OPENCCK=off; skipping opencck fetch"
+        return 0
+    fi
 
     local url=''
     [[ -f "${dir}/source-url" ]] && url=$(<"${dir}/source-url")

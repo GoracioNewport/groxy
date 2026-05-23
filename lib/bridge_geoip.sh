@@ -92,6 +92,13 @@ bridge_geoip_update() {
     local dir="${GROXY_DIR}/bridge/whitelist"
     [[ -d "${dir}" ]] || die "bridge whitelist not initialised — run 'groxy init bridge' first"
 
+    local WHITELIST_OPENCCK WHITELIST_CUSTOM WHITELIST_GEOIP
+    bridge_settings_load
+    if [[ "${WHITELIST_GEOIP}" != 'on' ]]; then
+        log "WHITELIST_GEOIP=off; skipping GeoIP fetch"
+        return 0
+    fi
+
     local url=''
     [[ -f "${dir}/geoip-source-url" ]] && url=$(<"${dir}/geoip-source-url")
     url="${url//[$'\n\r']/}"

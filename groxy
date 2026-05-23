@@ -35,6 +35,8 @@ source "${LIB_DIR}/bridge_ipset.sh"
 source "${LIB_DIR}/bridge_dns.sh"
 # shellcheck source=lib/bridge_geoip.sh
 source "${LIB_DIR}/bridge_geoip.sh"
+# shellcheck source=lib/bridge_settings.sh
+source "${LIB_DIR}/bridge_settings.sh"
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -91,6 +93,20 @@ Subcommands:
 
   whitelist <update|reload|set-source>              Управление whitelist'ом доменов.
   geoip <update|set-source>                         Управление GeoIP-карв-аутом (ipset ru_cidrs).
+  settings <get|set>                                3 тоггла feed'ов whitelist'a.
+EOF
+}
+
+usage_bridge_settings() {
+    cat <<'EOF'
+Usage: groxy bridge settings <subcommand> [args...]
+
+Subcommands:
+  get                            Показать все 3 тоггла.
+  set <key> <on|off>             Включить/выключить feed.
+                                 Keys: opencck (DNS cron-feed),
+                                       custom  (DNS из custom.txt),
+                                       geoip   (RU CIDR через ru_cidrs ipset).
 EOF
 }
 
@@ -207,6 +223,7 @@ cmd_bridge() {
         list-clients)    bridge_list_clients "$@" ;;
         whitelist)       cmd_bridge_whitelist "$@" ;;
         geoip)           cmd_bridge_geoip "$@" ;;
+        settings)        cmd_bridge_settings "$@" ;;
         ''|-h|--help|help)
             usage_bridge
             [[ -z "${sub}" ]] && exit 2 || exit 0
@@ -241,6 +258,22 @@ cmd_bridge_whitelist() {
 }
 
 # bridge_whitelist_update / reload / set_source defined in lib/bridge_dns.sh
+
+cmd_bridge_settings() {
+    local sub="${1:-}"
+    shift || true
+    case "${sub}" in
+        get)         bridge_settings_get "$@" ;;
+        set)         bridge_settings_set "$@" ;;
+        ''|-h|--help|help)
+            usage_bridge_settings
+            [[ -z "${sub}" ]] && exit 2 || exit 0
+            ;;
+        *)
+            die "unknown settings subcommand: ${sub}"
+            ;;
+    esac
+}
 
 cmd_bridge_geoip() {
     local sub="${1:-}"
