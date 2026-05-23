@@ -146,8 +146,11 @@ bridge_init_dns() {
 
     bridge_install_whitelist_timer
 
-    # Первый прогон GeoIP-feed'a — наполняет ru_cidrs сразу, чтобы не ждать
-    # суточный таймер (timer на :00 + рандомизация ≤15min).
+    # Первый прогон обоих feed'ов — наполняет ipset'ы и opencck.txt сразу,
+    # чтобы не ждать суточный таймер (он сработает только на следующих :00
+    # + ≤15min jitter).
+    log "first whitelist (opencck) feed refresh"
+    bridge_whitelist_update
     log "first GeoIP feed refresh"
     bridge_geoip_update
 
