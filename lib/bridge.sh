@@ -42,9 +42,20 @@ _bridge_load_profile() {
         || die "profile PORTAL_PORT not numeric: '${PORTAL_PORT}'"
 }
 
-# Render /etc/wireguard/wg1.conf for the active portal. Minimal form — only
-# the tunnel itself, no mangle/ipset/forward rules. Those join when the
-# wg0-side is implemented.
+# Render /etc/wireguard/wg1.conf for the active portal.
+#
+# Full-mangle form — wg1 carries all *client* traffic to the portal, but
+# leaves bridge-local traffic on the main routing table (so SSH and
+# everything else on the bridge itself doesn't get tunnelled). See
+# 01-TECHNICAL-SUMMARY.md grabel #2/#3 for the rationale.
+#
+# Mangle PREROUTING marks all packets entering from wg0 with mark 0x1.
+# Two exception rules unmark (set mark 0x0) when destination is in either
+# of the carve-out ipsets — vpn_domains (DNS-resolved RU domains, filled
+# by dnsmasq) or ru_cidrs (GeoIP, filled by daily timer). 'ip rule'
+# directs marked traffic to table 'vpn2' which contains only the default
+# route via wg1. Unmarked traffic (= bridge-local OR carve-out) goes
+# through the main table and out via the egress interface.
 bridge_render_wg1_conf() {
     local cfg_dir="${GROXY_DIR}/bridge"
     [[ -f "${cfg_dir}/current-portal" ]] \
@@ -71,12 +82,31 @@ bridge_render_wg1_conf() {
 [Interface]
 PrivateKey = ${private_key}
 Address = ${TUNNEL_BRIDGE_IP}/32
+Table = off
+
+PostUp = ip rule add fwmark 0x1 lookup vpn2 priority 100
+PostUp = ip route add default dev %i table vpn2
+PostUp = iptables -t mangle -A PREROUTING -i wg0 -j MARK --set-mark 0x1
+PostUp = iptables -t mangle -A PREROUTING -i wg0 -m set --match-set vpn_domains dst -j MARK --set-mark 0x0
+PostUp = iptables -t mangle -A PREROUTING -i wg0 -m set --match-set ru_cidrs dst -j MARK --set-mark 0x0
+PostUp = iptables -A FORWARD -i wg0 -o %i -j ACCEPT
+PostUp = iptables -A FORWARD -i %i -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE
+
+PostDown = ip rule del fwmark 0x1 lookup vpn2 priority 100 2>/dev/null || true
+PostDown = ip route del default dev %i table vpn2 2>/dev/null || true
+PostDown = iptables -t mangle -D PREROUTING -i wg0 -j MARK --set-mark 0x1 2>/dev/null || true
+PostDown = iptables -t mangle -D PREROUTING -i wg0 -m set --match-set vpn_domains dst -j MARK --set-mark 0x0 2>/dev/null || true
+PostDown = iptables -t mangle -D PREROUTING -i wg0 -m set --match-set ru_cidrs dst -j MARK --set-mark 0x0 2>/dev/null || true
+PostDown = iptables -D FORWARD -i wg0 -o %i -j ACCEPT 2>/dev/null || true
+PostDown = iptables -D FORWARD -i %i -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE 2>/dev/null || true
 
 [Peer]
 PublicKey = ${PORTAL_PUBKEY}
 PresharedKey = ${PSK}
 Endpoint = ${PORTAL_ENDPOINT}:${PORTAL_PORT}
-AllowedIPs = ${TUNNEL_PORTAL_IP}/32
+AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 EOF
 }
@@ -111,7 +141,7 @@ bridge_init() {
     mkdir -p "${GROXY_DIR}/bridge/portals/${PORTAL_NAME}"
     chmod 700 "${GROXY_DIR}/bridge"
 
-    log "ensuring WG keypair in ${GROXY_DIR}/bridge"
+    log "ensuring wg1 keypair in ${GROXY_DIR}/bridge"
     wg_ensure_keypair "${GROXY_DIR}/bridge"
 
     local portal_dir="${GROXY_DIR}/bridge/portals/${PORTAL_NAME}"
@@ -131,11 +161,27 @@ EOF
     write_atomic "${GROXY_DIR}/role" 644 <<<'bridge'
     write_atomic "${GROXY_DIR}/version" 644 <<<"${GROXY_VERSION}"
 
-    log "rendering /etc/wireguard/wg1.conf"
+    # wg0 server (clients) and routing/ipset scaffolding must exist before
+    # wg1's PostUp tries to add mangle rules that reference the ipsets.
+    bridge_init_wg0
+
+    log "setting up ipset and policy routing"
+    bridge_init_ipset
+
+    log "enabling IPv4 forwarding"
+    sysctl_set net.ipv4.ip_forward 1
+
+    log "rendering /etc/wireguard/wg1.conf (full mangle)"
     bridge_render_wg1_conf
+
+    log "rendering /etc/wireguard/wg0.conf"
+    bridge_render_wg0_conf
 
     log "starting wg-quick@wg1"
     wg_quick_enable_restart wg1
+
+    log "starting wg-quick@wg0"
+    wg_quick_enable_restart wg0
 
     local bridge_pubkey
     bridge_pubkey=$(<"${GROXY_DIR}/bridge/public.key")
