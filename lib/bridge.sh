@@ -183,6 +183,9 @@ EOF
     log "starting wg-quick@wg0"
     wg_quick_enable_restart wg0
 
+    log "setting up dnsmasq + whitelist scaffolding"
+    bridge_init_dns
+
     local bridge_pubkey
     bridge_pubkey=$(<"${GROXY_DIR}/bridge/public.key")
 

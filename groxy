@@ -31,6 +31,8 @@ source "${LIB_DIR}/bridge.sh"
 source "${LIB_DIR}/bridge_wg0.sh"
 # shellcheck source=lib/bridge_ipset.sh
 source "${LIB_DIR}/bridge_ipset.sh"
+# shellcheck source=lib/bridge_dns.sh
+source "${LIB_DIR}/bridge_dns.sh"
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -225,8 +227,8 @@ cmd_bridge_whitelist() {
 }
 
 bridge_whitelist_update()     { stub "$@"; }
-bridge_whitelist_reload()     { stub "$@"; }
 bridge_whitelist_set_source() { stub "$@"; }
+# bridge_whitelist_reload defined in lib/bridge_dns.sh
 
 # ---------------------------------------------------------------------------
 # Entry point
