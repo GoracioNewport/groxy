@@ -41,6 +41,8 @@ source "${LIB_DIR}/bridge_settings.sh"
 source "${LIB_DIR}/bridge_portals.sh"
 # shellcheck source=lib/status.sh
 source "${LIB_DIR}/status.sh"
+# shellcheck source=lib/uninstall.sh
+source "${LIB_DIR}/uninstall.sh"
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -190,7 +192,7 @@ cmd_status() {
 }
 
 cmd_uninstall() {
-    stub "$@"
+    cmd_uninstall_real "$@"
 }
 
 # ---------------------------------------------------------------------------
