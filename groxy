@@ -175,7 +175,14 @@ cmd_init() {
 }
 
 cmd_apply() {
-    stub "$@"
+    local role=''
+    [[ -f "${GROXY_DIR}/role" ]] && role=$(<"${GROXY_DIR}/role")
+    case "${role}" in
+        portal) portal_apply ;;
+        bridge) bridge_apply ;;
+        '')     die "groxy not initialised on this host (run 'groxy init <portal|bridge>')" ;;
+        *)      die "unknown role '${role}' in ${GROXY_DIR}/role" ;;
+    esac
 }
 
 cmd_status() {

@@ -352,3 +352,22 @@ portal_remove_bridge() {
     wg_quick_enable_restart wg0
     log "wg-quick@wg0 reloaded"
 }
+
+# `groxy apply` for the portal role — re-render wg0.conf and restart
+# wg-quick. Idempotent reconciliation: useful after manual edits to
+# /etc/groxy/portal/.
+portal_apply() {
+    require_root
+    [[ -f "${GROXY_DIR}/portal/server.env" ]] \
+        || die "portal not initialised — run 'groxy init portal' first"
+
+    log "ensuring IPv4 forwarding"
+    sysctl_set net.ipv4.ip_forward 1
+
+    log "rendering /etc/wireguard/wg0.conf"
+    portal_render_wg0_conf
+
+    log "restarting wg-quick@wg0"
+    wg_quick_enable_restart wg0
+    log "apply complete"
+}

@@ -198,3 +198,33 @@ EOF
     # Pubkey also on stdout — handy for scripting / pipes.
     printf '%s\n' "${bridge_pubkey}"
 }
+
+# `groxy apply` for the bridge role — re-render all configs and reconcile
+# services with the current /etc/groxy/bridge/ state. Idempotent.
+bridge_apply() {
+    require_root
+    [[ -f "${GROXY_DIR}/bridge/current-portal" ]] \
+        || die "bridge not initialised — run 'groxy init bridge --portal-profile=...' first"
+
+    log "ensuring IPv4 forwarding"
+    sysctl_set net.ipv4.ip_forward 1
+
+    log "ensuring routing table + ipset definitions"
+    bridge_ensure_rt_table
+    bridge_ensure_ipset_conf
+    bridge_ensure_ipsets_loaded
+
+    log "rendering /etc/wireguard/wg1.conf"
+    bridge_render_wg1_conf
+    log "rendering /etc/wireguard/wg0.conf"
+    bridge_render_wg0_conf
+
+    log "restarting wg-quick@wg1"
+    wg_quick_enable_restart wg1
+    log "restarting wg-quick@wg0"
+    wg_quick_enable_restart wg0
+
+    log "reconciling dnsmasq + whitelist feeds with current settings"
+    bridge_apply_settings
+    log "apply complete"
+}
