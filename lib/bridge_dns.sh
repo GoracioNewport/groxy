@@ -9,6 +9,7 @@
 
 readonly BRIDGE_DNSMASQ_CUSTOM_CONF='/etc/dnsmasq.d/50-custom.conf'
 readonly BRIDGE_DNSMASQ_OPENCCK_CONF='/etc/dnsmasq.d/00-opencck.conf'
+readonly BRIDGE_DEFAULT_OPENCCK_URL='https://russia.iplist.opencck.org/?format=text&data=domains'
 
 # Render /etc/dnsmasq.conf — single source-of-truth for the dnsmasq
 # instance groxy runs.
@@ -42,7 +43,10 @@ EOF
         chmod 600 "${dir}/custom.txt"
         log "seeded ${dir}/custom.txt with default '*.ru'"
     fi
-    [[ -f "${dir}/source-url" ]] || : > "${dir}/source-url"
+    if [[ ! -f "${dir}/source-url" ]]; then
+        printf '%s\n' "${BRIDGE_DEFAULT_OPENCCK_URL}" > "${dir}/source-url"
+        log "seeded ${dir}/source-url with default opencck URL"
+    fi
     [[ -f "${dir}/opencck.txt" ]] || : > "${dir}/opencck.txt"
     chmod 600 "${dir}/source-url" "${dir}/opencck.txt"
 }
@@ -57,6 +61,12 @@ _bridge_dns_emit_ipset_directives() {
         line="${line%"${line##*[![:space:]]}"}"
         [[ -z "${line}" ]]      && continue
         [[ "${line}" == \#* ]]  && continue
+        # Pass through already-formatted dnsmasq ipset= directives
+        # (opencck format=ipset emits this form directly).
+        if [[ "${line}" == ipset=* ]]; then
+            printf '%s\n' "${line}"
+            continue
+        fi
         domain="${line#\*.}"
         printf 'ipset=/%s/vpn_domains\n' "${domain}"
     done < "${src}"
