@@ -2,14 +2,82 @@
 # Bridge DNS — dnsmasq install/config + whitelist file rendering.
 # Sourced by the dispatcher; do not execute directly.
 #
-# dnsmasq binds to wg0 (bind-dynamic — works even if wg0 not yet up),
-# upstreams to Cloudflare/Google, and translates the user-editable
-# whitelist files into ipset= directives that fill the vpn_domains ipset
-# at resolve time.
+# dnsmasq binds to wg0 via `interface=wg0 + bind-dynamic`, upstreams to
+# Cloudflare/Google, and translates the user-editable whitelist files
+# into ipset= directives that fill the vpn_domains ipset at resolve
+# time. bind-dynamic *should* attach to wg0 lazily, but on Debian /
+# dnsmasq 2.91 we observed it silently failing to attach when dnsmasq
+# starts before wg0 has its address — _bridge_dnsmasq_restart_verify
+# guards against that.
 
 readonly BRIDGE_DNSMASQ_CUSTOM_CONF='/etc/dnsmasq.d/50-custom.conf'
 readonly BRIDGE_DNSMASQ_OPENCCK_CONF='/etc/dnsmasq.d/00-opencck.conf'
 readonly BRIDGE_DEFAULT_OPENCCK_URL='https://russia.iplist.opencck.org/?format=text&data=domains'
+
+# Read wg0 server IP from /etc/groxy/bridge/wg0/server.env. Echoes the IP
+# on stdout or returns non-zero if server.env is missing.
+_bridge_dns_wg0_ip() {
+    local cfg_dir="${GROXY_DIR}/bridge/wg0"
+    [[ -f "${cfg_dir}/server.env" ]] || return 1
+    local SUBNET=''
+    # shellcheck source=/dev/null
+    source "${cfg_dir}/server.env"
+    [[ -n "${SUBNET}" ]] || return 1
+    _bridge_wg0_server_ip "${SUBNET}"
+}
+
+# Wait until wg0 carries the server.env IP. 5s timeout. Used before
+# starting dnsmasq at init — apt's dnsmasq postinst may otherwise start
+# the daemon before wg0 has its address.
+_bridge_wait_for_wg0_address() {
+    local want_ip
+    want_ip=$(_bridge_dns_wg0_ip) || die "wg0 server.env missing — bridge_init_wg0 didn't run?"
+    local i
+    for ((i = 0; i < 50; i++)); do
+        ip -4 -o addr show dev wg0 2>/dev/null | grep -qw "${want_ip}" && return 0
+        sleep 0.1
+    done
+    die "wg0 didn't get address ${want_ip} within 5s — check wg-quick@wg0"
+}
+
+# True iff dnsmasq is listening on <ip>:53.
+_bridge_dnsmasq_bound_to() {
+    local ip="$1"
+    ss -uln 2>/dev/null | grep -qE "[[:space:]]${ip//./\\.}:53[[:space:]]"
+}
+
+# Restart dnsmasq and verify it actually binds to wg0's server IP. On
+# Debian / dnsmasq 2.91 we've seen `bind-dynamic` race during bridge
+# init: apt's postinst starts dnsmasq before wg0 has its address, the
+# subsequent `systemctl restart` then sometimes leaves the daemon bound
+# only to loopback (interface=wg0 silently ignored) even though the
+# config is correct. We work around it by polling ss for the wg0:53 bind
+# and retrying once. Callers in init paths should call
+# `_bridge_wait_for_wg0_address` first so the interface is definitely up.
+_bridge_dnsmasq_restart_verify() {
+    local want_ip
+    want_ip=$(_bridge_dns_wg0_ip) || {
+        # Bridge isn't initialised — fall back to a plain restart.
+        systemctl restart dnsmasq
+        return
+    }
+
+    systemctl restart dnsmasq
+
+    local i
+    for ((i = 0; i < 30; i++)); do
+        _bridge_dnsmasq_bound_to "${want_ip}" && return 0
+        sleep 0.1
+    done
+
+    log "warning: dnsmasq не подцепил ${want_ip}:53 за 3s — повторяю restart"
+    systemctl restart dnsmasq
+    for ((i = 0; i < 30; i++)); do
+        _bridge_dnsmasq_bound_to "${want_ip}" && return 0
+        sleep 0.1
+    done
+    die "dnsmasq так и не слушает ${want_ip}:53 — конфликт на :53 (systemd-resolved?) или wg0 не поднят"
+}
 
 # Render /etc/dnsmasq.conf — single source-of-truth for the dnsmasq
 # instance groxy runs.
@@ -137,12 +205,12 @@ bridge_init_dns() {
     bridge_ensure_settings
     bridge_render_dnsmasq_conf
 
+    # Ensure wg0 actually has its address before (re)starting dnsmasq —
+    # see _bridge_dnsmasq_restart_verify for why this matters.
+    _bridge_wait_for_wg0_address
+
     systemctl enable dnsmasq >/dev/null 2>&1
-    if systemctl is-active --quiet dnsmasq; then
-        systemctl restart dnsmasq
-    else
-        systemctl start dnsmasq
-    fi
+    _bridge_dnsmasq_restart_verify
 
     bridge_install_whitelist_timer
 
@@ -239,5 +307,5 @@ bridge_whitelist_update() {
     bridge_render_opencck_conf
 
     log "restarting dnsmasq"
-    systemctl restart dnsmasq
+    _bridge_dnsmasq_restart_verify
 }

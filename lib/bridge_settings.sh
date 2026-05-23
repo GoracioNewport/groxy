@@ -76,7 +76,7 @@ bridge_apply_settings() {
     else
         rm -f /etc/dnsmasq.d/50-custom.conf
     fi
-    systemctl is-active --quiet dnsmasq && systemctl restart dnsmasq
+    systemctl is-active --quiet dnsmasq && _bridge_dnsmasq_restart_verify
 
     # GeoIP feed → ru_cidrs ipset population.
     if [[ "${WHITELIST_GEOIP}" == 'on' ]]; then
