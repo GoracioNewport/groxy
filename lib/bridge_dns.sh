@@ -89,13 +89,14 @@ bridge_install_whitelist_timer() {
     local groxy_bin="${SCRIPT_DIR}/groxy"
     cat > /etc/systemd/system/groxy-whitelist-update.service <<EOF
 [Unit]
-Description=groxy — refresh opencck-style domain whitelist
+Description=groxy — refresh DNS whitelist + GeoIP feeds
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 ExecStart=${groxy_bin} bridge whitelist update
+ExecStart=${groxy_bin} bridge geoip update
 EOF
 
     cat > /etc/systemd/system/groxy-whitelist-update.timer <<'EOF'
@@ -122,6 +123,7 @@ EOF
 bridge_init_dns() {
     apt_install dnsmasq
     bridge_ensure_whitelist_dir
+    bridge_ensure_geoip_dir
     bridge_render_dnsmasq_conf
     bridge_render_custom_conf
     bridge_render_opencck_conf
@@ -134,6 +136,11 @@ bridge_init_dns() {
     fi
 
     bridge_install_whitelist_timer
+
+    # Первый прогон GeoIP-feed'a — наполняет ru_cidrs сразу, чтобы не ждать
+    # суточный таймер (timer на :00 + рандомизация ≤15min).
+    log "first GeoIP feed refresh"
+    bridge_geoip_update
 }
 
 # `groxy bridge whitelist reload` — re-render 50-custom.conf and

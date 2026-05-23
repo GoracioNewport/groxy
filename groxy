@@ -33,6 +33,8 @@ source "${LIB_DIR}/bridge_wg0.sh"
 source "${LIB_DIR}/bridge_ipset.sh"
 # shellcheck source=lib/bridge_dns.sh
 source "${LIB_DIR}/bridge_dns.sh"
+# shellcheck source=lib/bridge_geoip.sh
+source "${LIB_DIR}/bridge_geoip.sh"
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -88,6 +90,17 @@ Subcommands:
   list-clients                                      Показать клиентов.
 
   whitelist <update|reload|set-source>              Управление whitelist'ом доменов.
+  geoip <update|set-source>                         Управление GeoIP-карв-аутом (ipset ru_cidrs).
+EOF
+}
+
+usage_bridge_geoip() {
+    cat <<'EOF'
+Usage: groxy bridge geoip <subcommand> [args...]
+
+Subcommands:
+  update                Скачать свежий CIDR-список и перенаполнить ipset ru_cidrs.
+  set-source <url>      Сменить URL источника CIDR-списка (default — github.com/herrbischoff/country-ip-blocks).
 EOF
 }
 
@@ -193,6 +206,7 @@ cmd_bridge() {
         remove-client)   bridge_remove_client "$@" ;;
         list-clients)    bridge_list_clients "$@" ;;
         whitelist)       cmd_bridge_whitelist "$@" ;;
+        geoip)           cmd_bridge_geoip "$@" ;;
         ''|-h|--help|help)
             usage_bridge
             [[ -z "${sub}" ]] && exit 2 || exit 0
@@ -227,6 +241,22 @@ cmd_bridge_whitelist() {
 }
 
 # bridge_whitelist_update / reload / set_source defined in lib/bridge_dns.sh
+
+cmd_bridge_geoip() {
+    local sub="${1:-}"
+    shift || true
+    case "${sub}" in
+        update)        bridge_geoip_update "$@" ;;
+        set-source)    bridge_geoip_set_source "$@" ;;
+        ''|-h|--help|help)
+            usage_bridge_geoip
+            [[ -z "${sub}" ]] && exit 2 || exit 0
+            ;;
+        *)
+            die "unknown geoip subcommand: ${sub}"
+            ;;
+    esac
+}
 
 # ---------------------------------------------------------------------------
 # Entry point
