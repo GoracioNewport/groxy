@@ -226,9 +226,7 @@ cmd_bridge_whitelist() {
     esac
 }
 
-bridge_whitelist_update()     { stub "$@"; }
-bridge_whitelist_set_source() { stub "$@"; }
-# bridge_whitelist_reload defined in lib/bridge_dns.sh
+# bridge_whitelist_update / reload / set_source defined in lib/bridge_dns.sh
 
 # ---------------------------------------------------------------------------
 # Entry point
