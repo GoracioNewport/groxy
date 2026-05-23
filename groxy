@@ -37,6 +37,8 @@ source "${LIB_DIR}/bridge_dns.sh"
 source "${LIB_DIR}/bridge_geoip.sh"
 # shellcheck source=lib/bridge_settings.sh
 source "${LIB_DIR}/bridge_settings.sh"
+# shellcheck source=lib/bridge_portals.sh
+source "${LIB_DIR}/bridge_portals.sh"
 # shellcheck source=lib/status.sh
 source "${LIB_DIR}/status.sh"
 
@@ -236,10 +238,7 @@ cmd_bridge() {
     esac
 }
 
-bridge_add_portal()    { stub "$@"; }
-bridge_use_portal()    { stub "$@"; }
-bridge_list_portals()  { stub "$@"; }
-bridge_remove_portal() { stub "$@"; }
+# bridge_add_portal / use_portal / list_portals / remove_portal defined in lib/bridge_portals.sh
 # bridge_add_client / list_clients / remove_client defined in lib/bridge_wg0.sh
 
 cmd_bridge_whitelist() {
