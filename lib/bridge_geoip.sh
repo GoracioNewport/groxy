@@ -7,7 +7,7 @@
 # set is rebuilt atomically from a fetched newline-separated list of
 # CIDRs (e.g., github.com/herrbischoff/country-ip-blocks/ipv4/ru.cidr).
 
-readonly BRIDGE_DEFAULT_GEOIP_URL='https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/master/ipv4/ru.cidr'
+readonly BRIDGE_DEFAULT_GEOIP_URL='https://www.ipdeny.com/ipblocks/data/aggregated/ru-aggregated.zone'
 
 # Seed geoip files with defaults on first init. Doesn't touch user edits.
 bridge_ensure_geoip_dir() {
