@@ -132,9 +132,10 @@ EOF
 # WireGuard config to stdout.
 bridge_add_client() {
     require_root
-    local arg name=''
+    local arg name='' want_qr=0
     for arg in "$@"; do
         case "${arg}" in
+            --qr) want_qr=1 ;;
             --*) die "bridge add-client: unknown flag '${arg}'" ;;
             *)
                 [[ -z "${name}" ]] || die "bridge add-client: extra argument '${arg}'"
@@ -180,21 +181,28 @@ EOF
     server_ip=$(_bridge_wg0_server_ip "${SUBNET}")
 
     # Client config — DNS=bridge's wg0 IP так что whitelist через dnsmasq
-    # будет работать (когда dnsmasq поднимется в следующем checkpoint'е).
-    cat <<EOF
-# groxy client config — "${name}"
+    # будет работать.
+    local client_conf
+    printf -v client_conf '# groxy client config — "%s"
 [Interface]
-PrivateKey = ${priv}
-Address = ${addr}/32
-DNS = ${server_ip}
+PrivateKey = %s
+Address = %s/32
+DNS = %s
 
 [Peer]
-PublicKey = ${server_pub}
-PresharedKey = ${psk}
-Endpoint = ${PUBLIC_IP}:${LISTEN_PORT}
+PublicKey = %s
+PresharedKey = %s
+Endpoint = %s:%s
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
-EOF
+' "${name}" "${priv}" "${addr}" "${server_ip}" "${server_pub}" "${psk}" "${PUBLIC_IP}" "${LISTEN_PORT}"
+    printf '%s' "${client_conf}"
+
+    if (( want_qr )); then
+        apt_install qrencode
+        # ANSI-UTF8 QR в stderr — не загрязняет stdout (если юзер делает > file.conf).
+        printf '%s' "${client_conf}" | qrencode -t ansiutf8 >&2
+    fi
 }
 
 # `groxy bridge list-clients`.

@@ -91,7 +91,7 @@ Subcommands:
   list-portals                                      Показать доступные portal'ы.
   remove-portal <portal-name> [--yes]               Удалить portal profile.
 
-  add-client <client-name>                          Создать WG-клиента, напечатать конфиг.
+  add-client <client-name> [--qr]                   Создать WG-клиента, напечатать конфиг (+ QR в stderr).
   remove-client <client-name> [--yes]               Удалить клиента.
   list-clients                                      Показать клиентов.
 
