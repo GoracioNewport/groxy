@@ -177,7 +177,12 @@ status_bridge() {
     printf 'Services:\n'
     _status_service wg-quick@wg0   "UDP/${WG0_LISTEN_PORT:-?}"
     _status_service wg-quick@wg1   "handshake ${wg1_handshake_age}"
-    _status_service dnsmasq        "DNS on ${WG0_SUBNET%%/*}.1:53"
+    local dns_ip='?'
+    if [[ -n "${WG0_SUBNET}" ]]; then
+        local _base="${WG0_SUBNET%/*}"; _base="${_base%.*}"
+        dns_ip="${_base}.1"
+    fi
+    _status_service dnsmasq        "DNS on ${dns_ip}:53"
     _status_service ipset-restore.service
     _status_service groxy-whitelist-update.timer \
         "$(systemctl list-timers groxy-whitelist-update.timer --no-pager 2>/dev/null \
