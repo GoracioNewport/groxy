@@ -9,9 +9,13 @@
 # them before the corresponding feeds run.
 
 # Ensure routing table 200 'vpn2' is declared in /etc/iproute2/rt_tables.
+# Creates the file (and its parent directory) on systems that ship without
+# it — e.g., Debian 13 trixie omits both by default.
 bridge_ensure_rt_table() {
     local file=/etc/iproute2/rt_tables
-    if ! grep -qE '^[[:space:]]*200[[:space:]]+vpn2[[:space:]]*$' "${file}"; then
+    mkdir -p /etc/iproute2
+    if [[ ! -f "${file}" ]] \
+        || ! grep -qE '^[[:space:]]*200[[:space:]]+vpn2[[:space:]]*$' "${file}"; then
         printf '200 vpn2\n' >> "${file}"
         log "added 'vpn2' (table 200) to ${file}"
     fi
