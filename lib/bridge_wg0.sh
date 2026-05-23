@@ -98,6 +98,13 @@ bridge_render_wg0_conf() {
 PrivateKey = ${private_key}
 Address = ${server_ip}/${mask}
 ListenPort = ${LISTEN_PORT}
+
+# MASQUERADE client traffic when it carve-outs to egress (mark=0x0 → main
+# table → not wg1). Без этого src остаётся 10.66.66.X и пакет теряется
+# на первом же гетвее. Traffic that DOES go through wg1 уже MASQUERADE'ится
+# его собственным POSTROUTING правилом, поэтому исключаем wg1.
+PostUp = iptables -t nat -A POSTROUTING -s ${SUBNET} ! -o wg1 -j MASQUERADE
+PostDown = iptables -t nat -D POSTROUTING -s ${SUBNET} ! -o wg1 -j MASQUERADE 2>/dev/null || true
 EOF
         local peer_file name PSK ADDR PUBLIC_KEY
         for peer_file in "${cfg_dir}"/clients/*.peer; do

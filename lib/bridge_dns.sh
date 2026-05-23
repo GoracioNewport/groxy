@@ -87,6 +87,10 @@ bridge_whitelist_reload() {
     [[ -d "${dir}" ]] || die "whitelist not initialised — run 'groxy init bridge' first"
     log "rendering ${BRIDGE_DNSMASQ_CUSTOM_CONF} from custom.txt"
     bridge_render_custom_conf
-    log "reloading dnsmasq"
-    systemctl reload dnsmasq
+    # systemctl reload (SIGHUP) НЕ всегда сбрасывает DNS-кэш в dnsmasq 2.91:
+    # ранее закэшированный домен (например запрошенный до добавления в whitelist)
+    # продолжит резолвиться без триггера ipset= директивы. Restart гарантирует
+    # чистую таблицу.
+    log "restarting dnsmasq (flushes cache)"
+    systemctl restart dnsmasq
 }
