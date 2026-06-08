@@ -260,7 +260,22 @@ bridge_whitelist_set_source() {
 }
 
 # `groxy bridge whitelist update` — fetch from the configured URL, replace
-# opencck.txt atomically, re-render 00-opencck.conf, restart dnsmasq.
+# opencck.txt atomically, re-render 00-opencck.conf, flush + rebuild the
+# vpn_domains carve-out, restart dnsmasq.
+#
+# Why the flush: vpn_domains is hash:ip with no per-entry timeout, and
+# dnsmasq only ever *adds* IPs to it (at resolve time, via the ipset=
+# directives). Nothing removes them, so the set is effectively append-only
+# and grows without bound — stale entries and false-positives (e.g. a
+# whitelisted RU domain that once resolved onto a shared CDN/foreign IP
+# also used by a service we want via the portal) linger forever, wrongly
+# carving that foreign service direct out the RU bridge IP. Flushing on
+# each daily refresh makes the set rebuild from *live* resolutions, the
+# same way ru_cidrs is rebuilt wholesale from the GeoIP feed. The flush is
+# done only after a successful fetch+render (a failed fetch returns early,
+# leaving the set intact) and is paired with the dnsmasq restart below,
+# whose cache-clear forces clients to re-resolve and repopulate.
+#
 # Treats fetch failures as soft: keeps previous list intact, logs warning.
 bridge_whitelist_update() {
     require_root
@@ -305,6 +320,15 @@ bridge_whitelist_update() {
 
     log "rendering ${BRIDGE_DNSMASQ_OPENCCK_CONF}"
     bridge_render_opencck_conf
+
+    # Clean rebuild: drop accumulated/stale carve-outs so the set is
+    # repopulated from live resolutions after the restart below. See the
+    # function header for the rationale. Brief window: active connections
+    # to vpn_domains-only IPs (RU domains on non-RU IPs not covered by
+    # ru_cidrs) reroute direct→portal until re-resolved; ru_cidrs-covered
+    # traffic and portal traffic are unaffected.
+    log "flushing vpn_domains for clean rebuild (clears stale carve-outs)"
+    ipset flush vpn_domains 2>/dev/null || true
 
     log "restarting dnsmasq"
     _bridge_dnsmasq_restart_verify
