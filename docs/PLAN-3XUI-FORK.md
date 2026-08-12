@@ -29,10 +29,27 @@
 
 ## Фаза A — Форк и сборка (без прода)
 
-- [ ] Форк `MHSanaei/3x-ui` → своя организация; ветка `main` = зеркало upstream.
-- [ ] Ветка `feat/amneziawg` = upstream + PR #6105 (`Kuzz007:upstream-pr/amneziawg`,
-      48 коммитов, 103 файла, +7944/−151, `mergeable: true`, CI не зелёный).
-- [ ] Наладить сборку и прогон тестов локально; починить то, что валит CI.
+- [x] Форк: **https://github.com/GoracioNewport/3x-ui**, `main` = зеркало upstream.
+- [x] Ветка `feat/amneziawg` = upstream `main` + PR #6105
+      (`Kuzz007:upstream-pr/amneziawg`, 48 коммитов, 103 файла, +7944/−151).
+      Мердж-коммит `15f87b3`, **конфликтов не было**; в ветке 19 AWG-файлов,
+      включая `internal/amneziawg/{manager,params,portfwd,route_egress}.go`.
+- [ ] Наладить сборку и прогон тестов; починить то, что валит CI.
+
+Уточнение по CI: `mergeable_state: unstable` относится к чекам **апстрим-PR**.
+В репозитории автора (`Kuzz007/3x-ui`) CI и Release зелёные, он публикует релизы
+ветки — `v3.6.0-awg.11` от 2026-08-12. Риск «чинить чужой сломанный код» ниже,
+чем предполагалось; при необходимости его сборку можно взять как эталон.
+
+Требования сборки (из `go.mod`, `frontend/package.json`, `Dockerfile`):
+Go **1.26.5**, Node **≥24**, `CGO_ENABLED=1` (драйвер `mattn/go-sqlite3`),
+фронтенд вшивается через `go:embed internal/web/dist` — то есть сначала vite,
+потом `go build`. С macOS/arm64 под linux/amd64 собирается через эмуляцию в
+контейнере (`Dockerfile.build` в `~/Coding/3x-ui-fork`).
+
+На форках GitHub не регистрирует workflow'ы, пока владелец однократно не
+подтвердит это в UI (API нет). После подтверждения `release.yml` соберёт
+канонические артефакты под все 7 платформ сам.
 - [ ] Зафиксировать процедуру подтягивания upstream (rebase раз в N недель) —
       это главная цена форка.
 
