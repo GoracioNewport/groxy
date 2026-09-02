@@ -64,7 +64,7 @@
 | Домен-лист 19.7k | 14 мс, 35 МБ RSS | `xray -test` + живой роутинг |
 | Метрики throughput по узлу | есть | Stats API: per-inbound / per-outbound |
 | RU-геоданные | в комплекте панели | `geosite_RU.dat` 74 МБ, `geoip_RU.dat` 19 МБ |
-| Per-client трафик для WG-пиров | **НЕТ в Xray** | `proxy/wireguard/server.go` регистрирует только `inbound>>>` |
+| Per-client трафик для WG-пиров | **есть в v3.7.0** | панель отдаёт `up`/`down` и для инбаунда `wireguard` — проверено 02.09, см. `docs/PROTOCOL-BENCH.md` |
 | Per-client трафик для AWG | есть в PR #6105 | пункт «Statistics / traffic counters», live-tested |
 
 ---
