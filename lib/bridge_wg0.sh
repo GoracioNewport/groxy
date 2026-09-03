@@ -115,7 +115,12 @@ PostDown = iptables -t nat -D POSTROUTING -s ${SUBNET} ! -o wg1 -j MASQUERADE 2>
 # попадало — переустановка бриджа молча теряла его. Значение и отсутствие
 # фильтра по интерфейсу воспроизводят то, что реально стоит на
 # moscow-1000-01: на этом узле форвардится только туннельный трафик.
-PostUp = iptables -A FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320
+#
+# Добавление через -C ... || -A: на проде это правило уже стоит в рантайме с
+# мая, и безусловный -A при первом же полном рестарте wg0 создал бы второй
+# такой же, а PostDown снял бы только один — осиротевшее правило осталось бы
+# навсегда.
+PostUp = iptables -C FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320 2>/dev/null || iptables -A FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320
 PostDown = iptables -D FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320 2>/dev/null || true
 EOF
         local peer_file name PSK ADDR PUBLIC_KEY
