@@ -105,6 +105,18 @@ ListenPort = ${LISTEN_PORT}
 # его собственным POSTROUTING правилом, поэтому исключаем wg1.
 PostUp = iptables -t nat -A POSTROUTING -s ${SUBNET} ! -o wg1 -j MASQUERADE
 PostDown = iptables -t nat -D POSTROUTING -s ${SUBNET} ! -o wg1 -j MASQUERADE 2>/dev/null || true
+
+# MSS-клэмп. Путь клиент → bridge → portal вкладывает один туннель в
+# другой, и полноразмерный сегмент не проходит: соединение открывается,
+# а потом виснет на первом большом ответе. Клэмп правит MSS в SYN, чтобы
+# отправитель сам не превышал размер.
+#
+# На проде это правило с мая жило только в рантайме и в репозиторий не
+# попадало — переустановка бриджа молча теряла его. Значение и отсутствие
+# фильтра по интерфейсу воспроизводят то, что реально стоит на
+# moscow-1000-01: на этом узле форвардится только туннельный трафик.
+PostUp = iptables -A FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320
+PostDown = iptables -D FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320 2>/dev/null || true
 EOF
         local peer_file name PSK ADDR PUBLIC_KEY
         for peer_file in "${cfg_dir}"/clients/*.peer; do
