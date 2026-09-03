@@ -43,13 +43,19 @@ acquire_state_lock() { :; }   # /run недоступен вне root
 apt_install() { :; }
 # Счётчики вместо пустых заглушек: часть проверок ниже смотрит именно на то,
 # был ли вызван рендер и синхронизация, а не только на код возврата.
-render_calls=0
-sync_calls=0
+# Счётчики ведутся файлами, а не переменными: проверяемые функции часто
+# вызываются в подстановке команд, то есть в подоболочке, и присваивание
+# оттуда до родителя не доходит — из-за этого «проверка» вызова молча
+# проходила бы всегда.
+CALLS="${TMPROOT}/calls"
+mkdir -p "${CALLS}"
+count_of() { find "${CALLS}" -name "$1.*" | wc -l | tr -d ' '; }
+reset_calls() { rm -f "${CALLS}"/*; }
 # Настоящий рендер сохраняется под другим именем ДО подмены: часть проверок
 # смотрит именно на него, а повторный source модуля ругался бы на константы.
 eval "real_render_wg0_conf() $(declare -f bridge_render_wg0_conf | tail -n +2)"
-wg_sync_peers() { sync_calls=$((sync_calls + 1)); }
-bridge_render_wg0_conf() { render_calls=$((render_calls + 1)); }
+wg_sync_peers() { : > "${CALLS}/sync.$$.${RANDOM}"; }
+bridge_render_wg0_conf() { : > "${CALLS}/render.$$.${RANDOM}"; }
 _n=0
 wg() {
     case "$1" in
@@ -79,8 +85,13 @@ check() {
 }
 
 echo "== создание клиента =="
+reset_calls
 out=$(bridge_add_client alpha 2>/dev/null); rc=$?
 check "код возврата" 0 "${rc}"
+# Без этих двух проверок можно было вырезать из add-client и рендер, и
+# синхронизацию, а набор остался бы зелёным.
+check "конфиг перерендерен" 1 "$(count_of render)"
+check "ядро синхронизировано" 1 "$(count_of sync)"
 check "выдан первый свободный адрес" 1 \
     "$(grep -c 'Address = 10.66.66.2/32' <<<"${out}")"
 check "файл пира создан" 1 \
@@ -136,15 +147,14 @@ check "файл исчез" 0 \
     "$(find "${GROXY_DIR}/bridge/wg0/clients" -name 'beta.peer' | wc -l | tr -d ' ')"
 
 echo "== повторное удаление отсутствующего =="
-render_calls=0; sync_calls=0
+reset_calls
 ( bridge_remove_client beta --yes ) >/dev/null 2>&1; rc=$?
 check "успех, а не ошибка" 0 "${rc}"
 # Суть блокера: раньше ранний return отдавал успех, не тронув ни конфиг, ни
 # ядро — оборванное первое удаление оставляло пира живым, а повтор рапортовал,
 # что доступ отозван.
-bridge_remove_client beta --yes >/dev/null 2>&1
-check "отсутствующий клиент всё равно реконсилится: рендер" 1 "${render_calls}"
-check "отсутствующий клиент всё равно реконсилится: синхронизация" 1 "${sync_calls}"
+check "отсутствующий клиент всё равно реконсилится: рендер" 1 "$(count_of render)"
+check "отсутствующий клиент всё равно реконсилится: синхронизация" 1 "$(count_of sync)"
 
 echo "== испорченный файл пира не ломает список =="
 printf 'PSK=x\nADDR=10.66.66.9\nPUBLIC_KEY=y\nsep=\nname=OVERRIDDEN\n' \
@@ -243,6 +253,7 @@ if command -v flock >/dev/null; then
     acquire_state_lock() { :; }   # вернуть заглушку для остальных проверок
 else
     echo "  (flock недоступен — проверка блокировки пропущена)"
+    skipped=$((skipped + 3))
 fi
 
 echo "== wg_sync_peers не синхронизирует пустой конфиг =="
@@ -280,7 +291,10 @@ check "конфиг с пирами проходит" 0 "${rc}"
 
 echo
 if (( skipped )); then
-    echo "прошло: ${pass}, упало: ${fail}, пропущено: ${skipped} (нет python3)"
+    # Пропуски объявляются числом, а не одной строкой в середине вывода:
+    # иначе зелёный итог выглядит как полное покрытие, хотя часть проверок
+    # на этой платформе не исполнялась ни разу.
+    echo "прошло: ${pass}, упало: ${fail}, ПРОПУЩЕНО: ${skipped}"
 else
     echo "прошло: ${pass}, упало: ${fail}"
 fi
