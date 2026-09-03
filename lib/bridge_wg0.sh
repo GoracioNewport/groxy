@@ -132,10 +132,11 @@ EOF
 # WireGuard config to stdout.
 bridge_add_client() {
     require_root
-    local arg name='' want_qr=0
+    local arg name='' want_qr=0 want_json=0
     for arg in "$@"; do
         case "${arg}" in
             --qr) want_qr=1 ;;
+            --json) want_json=1 ;;
             --*) die "bridge add-client: unknown flag '${arg}'" ;;
             *)
                 [[ -z "${name}" ]] || die "bridge add-client: extra argument '${arg}'"
@@ -143,15 +144,26 @@ bridge_add_client() {
                 ;;
         esac
     done
-    [[ -n "${name}" ]] || die "usage: groxy bridge add-client <name>"
+    [[ -n "${name}" ]] || die "usage: groxy bridge add-client <name> [--qr] [--json]"
     validate_peer_name "${name}"
+
+    # Taken before the free-octet scan: the scan reads every peer file and
+    # then writes one, so without the lock a concurrent run allocates the
+    # same address.
+    acquire_state_lock
 
     local cfg_dir="${GROXY_DIR}/bridge/wg0"
     [[ -f "${cfg_dir}/server.env" ]] \
         || die "bridge not initialised — run 'groxy init bridge --portal-profile=...' first"
 
     local peer_file="${cfg_dir}/clients/${name}.peer"
-    [[ -e "${peer_file}" ]] && die "client '${name}' already exists; remove first with 'bridge remove-client ${name}'"
+    # A distinct status, not a generic failure: the private key is never
+    # stored, so we cannot hand back a config for a client that already
+    # exists. A caller that lost the response to a timeout uses this to tell
+    # "the name is taken" from "something broke", and then removes and
+    # recreates — safe, because a config nobody received was never used.
+    [[ -e "${peer_file}" ]] && die_code "${GROXY_EXIT_EXISTS}" \
+        "client '${name}' already exists; remove first with 'bridge remove-client ${name}'"
 
     local SUBNET='' LISTEN_PORT='' PUBLIC_IP=''
     # shellcheck source=/dev/null
@@ -174,8 +186,8 @@ EOF
 
     log "added client '${name}' (${addr})"
     bridge_render_wg0_conf
-    wg_quick_enable_restart wg0
-    log "wg-quick@wg0 reloaded"
+    wg_sync_peers wg0
+    log "wg0 peers synced"
 
     server_pub=$(<"${cfg_dir}/public.key")
     server_ip=$(_bridge_wg0_server_ip "${SUBNET}")
@@ -196,7 +208,15 @@ Endpoint = %s:%s
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 ' "${name}" "${priv}" "${addr}" "${server_ip}" "${server_pub}" "${psk}" "${PUBLIC_IP}" "${LISTEN_PORT}"
-    printf '%s' "${client_conf}"
+    if (( want_json )); then
+        # The config is carried base64-encoded: it is multi-line and contains
+        # characters that would need escaping, and a caller decoding one
+        # field beats a caller unescaping a string.
+        printf '{"name":"%s","address":"%s","config_b64":"%s"}\n' \
+            "${name}" "${addr}" "$(printf '%s' "${client_conf}" | base64 -w0)"
+    else
+        printf '%s' "${client_conf}"
+    fi
 
     if (( want_qr )); then
         apt_install qrencode
@@ -208,12 +228,38 @@ PersistentKeepalive = 25
 # `groxy bridge list-clients`.
 bridge_list_clients() {
     require_root
+    local arg want_json=0
+    for arg in "$@"; do
+        case "${arg}" in
+            --json) want_json=1 ;;
+            *) die "bridge list-clients: unknown argument '${arg}'" ;;
+        esac
+    done
+
     local cfg_dir="${GROXY_DIR}/bridge/wg0"
     [[ -d "${cfg_dir}/clients" ]] \
         || die "bridge not initialised — run 'groxy init bridge --portal-profile=...' first"
 
+    local peer_file name PSK ADDR PUBLIC_KEY sep=''
+    if (( want_json )); then
+        # Names pass validate_peer_name and addresses are IPv4, so both are
+        # already safe inside JSON strings — no escaping needed here.
+        printf '['
+        for peer_file in "${cfg_dir}"/clients/*.peer; do
+            [[ -e "${peer_file}" ]] || continue
+            name=$(basename "${peer_file}" .peer)
+            ADDR=''; PUBLIC_KEY=''
+            # shellcheck source=/dev/null
+            source "${peer_file}"
+            printf '%s{"name":"%s","address":"%s","public_key":"%s"}' \
+                "${sep}" "${name}" "${ADDR}" "${PUBLIC_KEY}"
+            sep=','
+        done
+        printf ']\n'
+        return 0
+    fi
+
     printf '%-20s %s\n' 'NAME' 'ADDR'
-    local peer_file name PSK ADDR PUBLIC_KEY
     for peer_file in "${cfg_dir}"/clients/*.peer; do
         [[ -e "${peer_file}" ]] || continue
         name=$(basename "${peer_file}" .peer)
@@ -241,13 +287,20 @@ bridge_remove_client() {
     done
     [[ -n "${name}" ]] || die "usage: groxy bridge remove-client <name> [--yes]"
     validate_peer_name "${name}"
+    acquire_state_lock
 
     local peer_file="${GROXY_DIR}/bridge/wg0/clients/${name}.peer"
-    [[ -e "${peer_file}" ]] || die "client '${name}' not found"
+    # Absent is success, not an error: the desired end state is "this client
+    # does not exist", and it already holds. That makes a retry after a lost
+    # response safe instead of leaving the caller to guess.
+    if [[ ! -e "${peer_file}" ]]; then
+        log "client '${name}' not present — nothing to remove"
+        return 0
+    fi
 
     rm -f "${peer_file}"
     log "removed client '${name}'"
     bridge_render_wg0_conf
-    wg_quick_enable_restart wg0
-    log "wg-quick@wg0 reloaded"
+    wg_sync_peers wg0
+    log "wg0 peers synced"
 }

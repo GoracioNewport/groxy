@@ -16,6 +16,33 @@ die() {
     exit 1
 }
 
+# Exit with a chosen status so a caller can tell outcomes apart instead of
+# parsing text. A bot that times out mid-command needs to distinguish "the
+# name is already taken" from "something broke" to decide whether retrying
+# is safe. Codes in use: 3 — already exists.
+readonly GROXY_EXIT_EXISTS=3
+die_code() {
+    local code="$1"; shift
+    log "error: $*"
+    exit "${code}"
+}
+
+# Serialise state-changing operations across processes.
+#
+# Nothing in v1 took a lock, so two concurrent `add-client` runs both read
+# the peer list, both pick the same free octet and hand one address to two
+# clients — WireGuard then routes by whichever peer matches AllowedIPs and
+# the breakage is silent. A human rarely raced himself; a bot with a retry
+# button does it easily.
+#
+# The lock lives on fd 9 for the life of the process, so it is released on
+# exit however we leave — including die().
+acquire_state_lock() {
+    local lock='/run/groxy.lock'
+    exec 9>"${lock}" || die "cannot open lock file ${lock}"
+    flock -w 30 9 || die "another groxy operation is in progress (waited 30s)"
+}
+
 # Abort unless the effective UID is root.
 require_root() {
     if [[ ${EUID} -ne 0 ]]; then
