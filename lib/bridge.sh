@@ -251,9 +251,18 @@ bridge_apply() {
 
     # wg0 carries 36 client sessions. Restarting it re-handshakes every one and
     # resets the kernel's per-peer counters — the same counters the bot reports
-    # traffic from. So restart only when something syncconf genuinely cannot
-    # apply: the interface address, which belongs to `ip addr` rather than to
-    # wg. Otherwise reconcile the peers and leave the sessions alone.
+    # traffic from. So restart only when something syncconf cannot apply.
+    #
+    # syncconf applies the interface keys and the peers. It does not set the
+    # interface address, and it does not run PostUp — so the firewall rules
+    # have to be reconciled explicitly here, or apply would report success
+    # while leaving the MSS clamp and the carve-out MASQUERADE uninstalled.
+    local SUBNET=''
+    # shellcheck source=/dev/null
+    source "${GROXY_DIR}/bridge/wg0/server.env"
+    log "ensuring wg0 firewall rules"
+    bridge_ensure_wg0_rules "${SUBNET}"
+
     if _bridge_wg0_address_matches; then
         log "syncing wg0 peers (address unchanged, sessions preserved)"
         wg_sync_peers wg0

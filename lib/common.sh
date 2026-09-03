@@ -5,6 +5,11 @@
 # Root of the declarative state. Overridable via env for testing.
 readonly GROXY_DIR="${GROXY_DIR:-/etc/groxy}"
 
+# Where rendered WireGuard configs land. Overridable for the same reason: the
+# render path is where a corrupt peer file does its damage, and a hardcoded
+# /etc/wireguard meant no test could watch it happen.
+readonly GROXY_WG_DIR="${GROXY_WG_DIR:-/etc/wireguard}"
+
 # Log to stderr with an ISO-8601 timestamp.
 log() {
     printf '[%(%Y-%m-%dT%H:%M:%S%z)T] %s\n' -1 "$*" >&2
@@ -95,9 +100,14 @@ validate_peer_name() {
 # needs shell evaluation — they are flat KEY=VALUE.
 #
 # Prints the value, or nothing if the key is absent.
+# `-a` обязателен. Без него один NUL-байт в файле переводит grep в бинарный
+# режим: он возвращает пустую строку с кодом 0, то есть «поле отсутствует», а
+# не «файл повреждён». Проверено на живом бридже с GNU grep 3.8. Прежний
+# `source` такой файл читал корректно, так что отказ от него без этого флага
+# был бы разменом одной поломки на другую, потише и потому опаснее.
 peer_field() {
     local file="$1" key="$2" line
-    line=$(grep -m1 "^${key}=" "${file}" 2>/dev/null) || return 0
+    line=$(grep -a -m1 "^${key}=" "${file}" 2>/dev/null) || return 0
     printf '%s\n' "${line#*=}"
 }
 

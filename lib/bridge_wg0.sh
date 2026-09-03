@@ -74,6 +74,29 @@ _bridge_wg0_alloc_octet() {
     die "wg0 subnet exhausted (.2-.254 taken)"
 }
 
+# Привести правила фаервола wg0 к желаемому виду, не трогая интерфейс.
+#
+# Эти же две команды стоят в PostUp шаблона wg0.conf, и текст обязан совпадать
+# дословно, иначе проверка -C не найдёт живое правило и появится дубль. Держать
+# их в двух местах приходится потому, что PostUp обязан быть самодостаточным:
+# wg-quick поднимает интерфейс и без groxy.
+#
+# Нужны здесь потому, что apply больше не перезапускает wg0, а syncconf PostUp
+# не выполняет — проверено на бридже: `wg-quick strip wg0` отдаёт интерфейс и
+# пиров, но ни одной строки PostUp. Без этой сверки reconciler печатал бы
+# «apply complete», не восстановив ни MSS-клэмпа, ни MASQUERADE.
+bridge_ensure_wg0_rules() {
+    local subnet="$1"
+
+    iptables -t nat -C POSTROUTING -s "${subnet}" ! -o wg1 -j MASQUERADE 2>/dev/null \
+        || iptables -t nat -A POSTROUTING -s "${subnet}" ! -o wg1 -j MASQUERADE \
+        || die "failed to install the MASQUERADE rule for ${subnet}"
+
+    iptables -t mangle -C FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320 2>/dev/null \
+        || iptables -t mangle -A FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320 \
+        || die "failed to install the MSS clamp"
+}
+
 # Render /etc/wireguard/wg0.conf from server.env + clients/*.peer.
 # Server has no PostUp — routing happens at wg1 level. wg0 is just the
 # kernel-side WG socket that clients hit.
@@ -88,6 +111,16 @@ bridge_render_wg0_conf() {
     server_ip=$(_bridge_wg0_server_ip "${SUBNET}")
     mask="${SUBNET#*/}"
 
+    # Собирается во временный файл, а не через конвейер в write_atomic.
+    # С конвейером `die` из цикла убивал только левую подоболочку, а
+    # write_atomic справа спокойно дочитывал оборванный поток, ставил права и
+    # переименовывал его на место: один испорченный файл пира давал wg0.conf с
+    # одним клиентом вместо тридцати шести, и wg-quick такой файл принимал.
+    # Отказ был громким, а конфиг всё равно подменялся.
+    local tmp
+    tmp=$(mktemp) || die "cannot create a temporary file for wg0.conf"
+
+    local written_peers=0
     {
         cat <<EOF
 # Managed by groxy ${GROXY_VERSION}. Do not edit by hand.
@@ -138,12 +171,20 @@ EOF
             addr=$(peer_field "${peer_file}" ADDR)
             pubkey=$(peer_field "${peer_file}" PUBLIC_KEY)
 
-            [[ -n "${pubkey}" ]] || continue
+            # Пропуск заменён на отказ: раньше пир с нечитаемым ключом просто
+            # исчезал из конфига без единой строки в логе, а следующая
+            # синхронизация снимала его с ядра. Клиент терял доступ, и никто
+            # об этом не узнавал. Лучше не тронуть конфиг вовсе — старый
+            # остаётся рабочим, пока человек не починит файл. Удалению это не
+            # мешает: remove-client сносит файл до рендера.
+            [[ -n "${pubkey}" ]] \
+                || die "no readable PUBLIC_KEY in ${peer_file} — refusing to render"
             validate_wg_key "${pubkey}" "public key in ${peer_file}"
             [[ -n "${psk}" ]] && validate_wg_key "${psk}" "preshared key in ${peer_file}"
             [[ "${addr}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] \
                 || die "invalid ADDR '${addr}' in ${peer_file}"
 
+            written_peers=$((written_peers + 1))
             cat <<EOF
 
 # client: ${name}
@@ -153,7 +194,11 @@ PresharedKey = ${psk}
 AllowedIPs = ${addr}/32
 EOF
         done
-    } | write_atomic /etc/wireguard/wg0.conf 600
+    } > "${tmp}"
+
+    write_atomic "${GROXY_WG_DIR}/wg0.conf" 600 < "${tmp}"
+    rm -f "${tmp}"
+    log "rendered wg0.conf with ${written_peers} peer(s)"
 }
 
 # `groxy bridge add-client <name>`. Generates the client keypair on the

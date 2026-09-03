@@ -63,6 +63,19 @@ wg_sync_peers() {
         rm -f "${tmp}"
         die "wg-quick strip ${iface} produced no usable config — refusing to sync"
     fi
+
+    # Наличие [Interface] ещё не значит, что конфиг цел. Если все файлы пиров
+    # разом стали нечитаемыми, рендер выдаёт валидный конфиг с нулём пиров,
+    # прежняя проверка его пропускала, и syncconf снимал всех — а функция
+    # рапортовала «sessions preserved». Ноль пиров при живых пирах в ядре —
+    # это не «удалили последнего», это потеря состояния.
+    local want_peers have_peers
+    want_peers=$(grep -c '^\[Peer\]' "${tmp}" || true)
+    have_peers=$(wg show "${iface}" peers 2>/dev/null | grep -c . || true)
+    if (( want_peers == 0 && have_peers > 0 )); then
+        rm -f "${tmp}"
+        die "config for ${iface} has no peers while the kernel has ${have_peers} — refusing to sync"
+    fi
     if ! wg syncconf "${iface}" "${tmp}"; then
         rm -f "${tmp}"
         die "wg syncconf ${iface} failed"

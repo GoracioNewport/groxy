@@ -9,6 +9,10 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMPROOT="$(mktemp -d)"
 export GROXY_DIR="${TMPROOT}/groxy"
+# Обе константы объявлены readonly при загрузке common.sh, поэтому задать их
+# надо ДО неё.
+export GROXY_WG_DIR="${TMPROOT}/wg"
+mkdir -p "${GROXY_WG_DIR}"
 GROXY_VERSION='test'
 
 mkdir -p "${GROXY_DIR}/bridge/wg0/clients"
@@ -41,6 +45,9 @@ apt_install() { :; }
 # был ли вызван рендер и синхронизация, а не только на код возврата.
 render_calls=0
 sync_calls=0
+# Настоящий рендер сохраняется под другим именем ДО подмены: часть проверок
+# смотрит именно на него, а повторный source модуля ругался бы на константы.
+eval "real_render_wg0_conf() $(declare -f bridge_render_wg0_conf | tail -n +2)"
 wg_sync_peers() { sync_calls=$((sync_calls + 1)); }
 bridge_render_wg0_conf() { render_calls=$((render_calls + 1)); }
 _n=0
@@ -181,6 +188,33 @@ check "битый пир не создан" 0 \
     "$(find "${GROXY_DIR}/bridge/wg0/clients" -name 'overflow.peer' | wc -l | tr -d ' ')"
 rm -f "${GROXY_DIR}"/bridge/wg0/clients/fill*.peer
 
+echo "== рендер не подменяет конфиг обрезком =="
+# Проверяется настоящий bridge_render_wg0_conf, без заглушки: именно здесь
+# конвейер в write_atomic коммитил оборванный поток, и один битый файл пира
+# оставлял в wg0.conf одного клиента вместо всех.
+( real_render_wg0_conf ) >/dev/null 2>&1
+check "исходный рендер удался" 1 \
+    "$(find "${GROXY_WG_DIR}" -name 'wg0.conf' | wc -l | tr -d ' ')"
+good_peers=$(grep -c '^\[Peer\]' "${GROXY_WG_DIR}/wg0.conf")
+cp "${GROXY_WG_DIR}/wg0.conf" "${TMPROOT}/wg0.good"
+
+printf 'PSK=x\nPUBLIC_KEY=y\n' \
+    > "${GROXY_DIR}/bridge/wg0/clients/broken.peer"
+( real_render_wg0_conf ) >/dev/null 2>&1; rc=$?
+check "битый файл пира — отказ" 1 "${rc}"
+check "старый конфиг не тронут" "${good_peers}" \
+    "$(grep -c '^\[Peer\]' "${GROXY_WG_DIR}/wg0.conf")"
+check "конфиг не подменён обрезком" ok \
+    "$(cmp -s "${TMPROOT}/wg0.good" "${GROXY_WG_DIR}/wg0.conf" && echo ok)"
+rm -f "${GROXY_DIR}/bridge/wg0/clients/broken.peer"
+
+echo "== NUL-байт в файле пира не читается как пустое поле =="
+printf 'PSK=x\nADDR=10.66.66.50\n\000\nPUBLIC_KEY=z\n' \
+    > "${GROXY_DIR}/bridge/wg0/clients/nul.peer"
+check "ADDR всё равно читается" 10.66.66.50 \
+    "$(peer_field "${GROXY_DIR}/bridge/wg0/clients/nul.peer" ADDR)"
+rm -f "${GROXY_DIR}/bridge/wg0/clients/nul.peer"
+
 echo "== блокировка действительно взаимоисключающая =="
 # Раньше лок в тестах просто заглушали пустышкой, поэтому не проверялось
 # ничего — включая то, ради чего он вводился. Здесь берётся настоящий flock,
@@ -225,6 +259,24 @@ check "падение wg-quick strip — отказ" 1 "${rc}"
 wg-quick() { : ; }         # strip успешен, но вывод пуст
 ( wg_sync_peers wg0 ) >/dev/null 2>&1; rc=$?
 check "пустой вывод strip — отказ" 1 "${rc}"
+
+# Самый тихий из сценариев: конфиг валиден, секция [Interface] на месте, но
+# пиров ноль — а в ядре их 36. Прежний страж такое пропускал, и syncconf
+# снимал всех, отрапортовав «sessions preserved».
+wg() {
+    case "$1" in
+        show) [[ "$3" == 'peers' ]] && printf 'peerA\npeerB\n' ;;
+        syncconf) synced=$((synced + 1)) ;;
+        *) : ;;
+    esac
+}
+wg-quick() { printf '[Interface]\nPrivateKey = x\n'; }
+( wg_sync_peers wg0 ) >/dev/null 2>&1; rc=$?
+check "ноль пиров при живых пирах в ядре — отказ" 1 "${rc}"
+
+wg-quick() { printf '[Interface]\nPrivateKey = x\n\n[Peer]\nPublicKey = y\n'; }
+( wg_sync_peers wg0 ) >/dev/null 2>&1; rc=$?
+check "конфиг с пирами проходит" 0 "${rc}"
 
 echo
 if (( skipped )); then
