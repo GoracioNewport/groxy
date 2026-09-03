@@ -117,6 +117,7 @@ EOF
 # Idempotent.
 bridge_init() {
     require_root
+    acquire_state_lock
     _bridge_parse_init_flags "$@"
     require_supported_os
 

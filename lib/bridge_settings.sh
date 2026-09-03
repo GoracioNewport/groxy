@@ -102,6 +102,7 @@ bridge_settings_get() {
 # `groxy bridge settings set <key> <on|off>`.
 bridge_settings_set() {
     require_root
+    acquire_state_lock
     local key="${1:-}" value="${2:-}"
     [[ -n "${key}" && -n "${value}" ]] \
         || die "usage: groxy bridge settings set <opencck|custom|geoip> <on|off>"

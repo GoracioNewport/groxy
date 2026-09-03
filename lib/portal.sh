@@ -120,6 +120,7 @@ EOF
 # Top-level: `groxy init portal [flags]`. Idempotent.
 portal_init() {
     require_root
+    acquire_state_lock
     _portal_parse_init_flags "$@"
     require_supported_os
 
