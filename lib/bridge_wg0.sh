@@ -232,7 +232,6 @@ EOF
     log "added client '${name}' (${addr})"
     bridge_render_wg0_conf
     wg_sync_peers wg0
-    log "wg0 peers synced"
 
     # An empty public.key reads successfully and yields a config with a blank
     # PublicKey — accepted silently and handed out as working. wg_ensure_keypair
@@ -378,5 +377,4 @@ bridge_remove_client() {
 
     bridge_render_wg0_conf
     wg_sync_peers wg0
-    log "wg0 peers synced"
 }

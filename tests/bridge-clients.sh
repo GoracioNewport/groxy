@@ -47,11 +47,18 @@ _n=0
 wg() {
     case "$1" in
         genkey|genpsk) _n=$((_n + 1)); printf 'fakekey%036d=\n' "${_n}" ;;
-        pubkey)        cat >/dev/null; _n=$((_n + 1))
-                       printf 'fakepub%036d=\n' "${_n}" ;;
+        # Публичный выводится из приватного, а не из независимого счётчика:
+        # иначе ни одна проверка не может убедиться, что в файл пира записан
+        # ключ именно того клиента, чей приватный ушёл в конфиг.
+        pubkey)        local priv; read -r priv
+                       printf '%s\n' "${priv/fakekey/fakepub}" ;;
         *) : ;;
     esac
 }
+
+skipped=0
+have_python=0
+command -v python3 >/dev/null && have_python=1
 
 pass=0; fail=0
 check() {
@@ -85,9 +92,26 @@ check "адрес .3" 1 "$(grep -c 'Address = 10.66.66.3/32' <<<"${out}")"
 echo "== --json =="
 out=$(bridge_add_client gamma --json 2>/dev/null)
 check "ровно одна строка" 1 "$(wc -l <<<"${out}" | tr -d ' ')"
-check "есть поле config_b64" 1 "$(grep -c 'config_b64' <<<"${out}")"
+if (( have_python )); then
+    # Раньше проверялось только наличие подстроки: структура вывода
+    # add-client не разбиралась как JSON ни разу.
+    check "валидный JSON с нужными полями" ok \
+        "$(python3 -c 'import json,sys
+d=json.load(sys.stdin)
+assert set(d) >= {"name","address","config_b64"}, d
+assert d["config_b64"], "пустой config_b64"
+print("ok")' <<<"${out}" 2>/dev/null)"
+else
+    skipped=$((skipped + 1))
+fi
 decoded=$(sed 's/.*"config_b64":"\([^"]*\)".*/\1/' <<<"${out}" | base64 -d)
 check "конфиг декодируется" 1 "$(grep -c '\[Interface\]' <<<"${decoded}")"
+
+# Ключ, отданный клиенту, и ключ, записанный в файл пира, должны быть парой.
+priv=$(sed -n 's/^PrivateKey = //p' <<<"${decoded}")
+want_pub="${priv/fakekey/fakepub}"
+got_pub=$(peer_field "${GROXY_DIR}/bridge/wg0/clients/gamma.peer" PUBLIC_KEY)
+check "в файле пира лежит публичный ключ выданного приватного" "${want_pub}" "${got_pub}"
 
 echo "== list-clients --json =="
 out=$(bridge_list_clients --json 2>/dev/null)
@@ -157,6 +181,36 @@ check "битый пир не создан" 0 \
     "$(find "${GROXY_DIR}/bridge/wg0/clients" -name 'overflow.peer' | wc -l | tr -d ' ')"
 rm -f "${GROXY_DIR}"/bridge/wg0/clients/fill*.peer
 
+echo "== блокировка действительно взаимоисключающая =="
+# Раньше лок в тестах просто заглушали пустышкой, поэтому не проверялось
+# ничего — включая то, ради чего он вводился. Здесь берётся настоящий flock,
+# только по пути во временном каталоге и с коротким ожиданием.
+if command -v flock >/dev/null; then
+    unset -f acquire_state_lock
+    # shellcheck source=/dev/null
+    source "${REPO}/lib/common.sh"
+    export GROXY_LOCK="${TMPROOT}/state.lock"
+    export GROXY_LOCK_WAIT=1
+
+    ( flock -x 8 && sleep 3 ) 8>"${GROXY_LOCK}" &
+    holder=$!
+    sleep 0.3
+    ( acquire_state_lock ) >/dev/null 2>&1; rc=$?
+    check "занятый лок даёт код 11, а не общий 1" 11 "${rc}"
+    wait "${holder}" 2>/dev/null
+
+    ( acquire_state_lock ) >/dev/null 2>&1; rc=$?
+    check "свободный лок берётся" 0 "${rc}"
+
+    # Повторный вызов в одном процессе не должен переоткрывать дескриптор:
+    # переоткрытие на миг снимает блокировку.
+    ( acquire_state_lock; acquire_state_lock ) >/dev/null 2>&1; rc=$?
+    check "повторный захват — не ошибка" 0 "${rc}"
+    acquire_state_lock() { :; }   # вернуть заглушку для остальных проверок
+else
+    echo "  (flock недоступен — проверка блокировки пропущена)"
+fi
+
 echo "== wg_sync_peers не синхронизирует пустой конфиг =="
 # Заглушка выше перезаписала функцию модуля, поэтому её надо вернуть, а не
 # просто снять: unset -f оставил бы пустоту.
@@ -173,6 +227,10 @@ wg-quick() { : ; }         # strip успешен, но вывод пуст
 check "пустой вывод strip — отказ" 1 "${rc}"
 
 echo
-echo "прошло: ${pass}, упало: ${fail}"
+if (( skipped )); then
+    echo "прошло: ${pass}, упало: ${fail}, пропущено: ${skipped} (нет python3)"
+else
+    echo "прошло: ${pass}, упало: ${fail}"
+fi
 rm -rf "${TMPROOT}"
 [[ ${fail} -eq 0 ]]

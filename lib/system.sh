@@ -138,4 +138,18 @@ ensure_conntrack_capacity() {
 # Managed by groxy ${GROXY_VERSION}. Do not edit by hand.
 options nf_conntrack hashsize=${want}
 EOF
+
+    # Force the module to load at boot, or the sysctl above never applies.
+    #
+    # nf_conntrack is loadable and normally appears only once something asks
+    # for NAT — that is, when wg-quick runs, long after systemd-sysctl. The
+    # key /proc/sys/net/netfilter/nf_conntrack_max does not exist yet at that
+    # point, so the sysctl.d entry fails silently and the ceiling after a
+    # reboot is whatever the kernel derived from RAM. systemd-sysctl is
+    # ordered after systemd-modules-load, so loading it here makes the
+    # sysctl land.
+    write_atomic /etc/modules-load.d/99-groxy-conntrack.conf 644 <<EOF
+# Managed by groxy ${GROXY_VERSION}. Do not edit by hand.
+nf_conntrack
+EOF
 }

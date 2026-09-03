@@ -43,8 +43,14 @@ wg_sync_peers() {
     local iface="$1" tmp
     systemctl enable "wg-quick@${iface}" >/dev/null 2>&1
 
+    # Logged here rather than by the caller: this branch performs a full
+    # start, not a sync, and callers used to announce "peers synced" either
+    # way — which reads as "sessions were preserved" when in fact there were
+    # none to preserve.
     if ! systemctl is-active --quiet "wg-quick@${iface}"; then
-        systemctl start "wg-quick@${iface}"
+        log "wg-quick@${iface} is not running — starting it"
+        systemctl start "wg-quick@${iface}" \
+            || die "systemctl start wg-quick@${iface} failed"
         return 0
     fi
 
@@ -62,6 +68,7 @@ wg_sync_peers() {
         die "wg syncconf ${iface} failed"
     fi
     rm -f "${tmp}"
+    log "${iface} peers synced (sessions preserved)"
 }
 
 # Enable a wg-quick@<iface> unit and either start it or restart it to pick up

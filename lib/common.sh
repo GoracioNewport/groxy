@@ -46,11 +46,23 @@ die_code() {
 # Contention gets its own status: waiting out someone else's operation is the
 # safest possible outcome to retry, and collapsing it into the generic failure
 # code meant a routine collision looked exactly like a broken bridge.
+#
+# Calling it twice in one process is a no-op rather than a re-open. Re-running
+# `exec 9>` closes the previous descriptor first, and closing the last
+# descriptor of an open file description releases the lock — leaving a window
+# in which another process can take it.
+#
+# The path is overridable so the test suite can exercise real mutual exclusion
+# instead of stubbing the function out.
+GROXY_LOCK_HELD=0
 acquire_state_lock() {
-    local lock='/run/groxy.lock'
+    (( GROXY_LOCK_HELD )) && return 0
+    local lock="${GROXY_LOCK:-/run/groxy.lock}"
+    local wait="${GROXY_LOCK_WAIT:-30}"
     exec 9>"${lock}" || die "cannot open lock file ${lock}"
-    flock -w 30 9 || die_code "${GROXY_EXIT_BUSY}" \
-        "another groxy operation is in progress (waited 30s)"
+    flock -w "${wait}" 9 || die_code "${GROXY_EXIT_BUSY}" \
+        "another groxy operation is in progress (waited ${wait}s)"
+    GROXY_LOCK_HELD=1
 }
 
 # Abort unless the effective UID is root.
