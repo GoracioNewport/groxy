@@ -19,8 +19,14 @@ die() {
 # Exit with a chosen status so a caller can tell outcomes apart instead of
 # parsing text. A bot that times out mid-command needs to distinguish "the
 # name is already taken" from "something broke" to decide whether retrying
-# is safe. Codes in use: 3 — already exists.
-readonly GROXY_EXIT_EXISTS=3
+# is safe.
+#
+# Values start at 10 on purpose. Low codes are crowded: `systemctl is-active`
+# alone returns 3, and under `set -e` any command's status can surface as the
+# function's own. A caller told "3 means the name is taken" would eventually
+# act on a leaked status from something else entirely.
+readonly GROXY_EXIT_EXISTS=10   # имя уже занято
+readonly GROXY_EXIT_BUSY=11     # другая операция держит блокировку
 die_code() {
     local code="$1"; shift
     log "error: $*"
@@ -37,10 +43,14 @@ die_code() {
 #
 # The lock lives on fd 9 for the life of the process, so it is released on
 # exit however we leave — including die().
+# Contention gets its own status: waiting out someone else's operation is the
+# safest possible outcome to retry, and collapsing it into the generic failure
+# code meant a routine collision looked exactly like a broken bridge.
 acquire_state_lock() {
     local lock='/run/groxy.lock'
     exec 9>"${lock}" || die "cannot open lock file ${lock}"
-    flock -w 30 9 || die "another groxy operation is in progress (waited 30s)"
+    flock -w 30 9 || die_code "${GROXY_EXIT_BUSY}" \
+        "another groxy operation is in progress (waited 30s)"
 }
 
 # Abort unless the effective UID is root.
@@ -62,6 +72,21 @@ validate_peer_name() {
     if [[ ! "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]]; then
         die "invalid peer name '${name}' (allowed: [A-Za-z0-9._-], 1-63 chars, alnum first)"
     fi
+}
+
+# Read one KEY=VALUE field from a state file without executing it.
+#
+# Peer files are state, not code, but they were read with `source`. One
+# corrupted or hand-restored file could then redefine the caller's own
+# variables: a peer file containing `sep=` was enough to break the JSON output
+# for every client at once, not just its own entry. Nothing in these files
+# needs shell evaluation — they are flat KEY=VALUE.
+#
+# Prints the value, or nothing if the key is absent.
+peer_field() {
+    local file="$1" key="$2" line
+    line=$(grep -m1 "^${key}=" "${file}" 2>/dev/null) || return 0
+    printf '%s\n' "${line#*=}"
 }
 
 # Validate a WireGuard key — public, private or preshared. All are 32-byte

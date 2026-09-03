@@ -94,7 +94,8 @@ Subcommands:
   remove-portal <portal-name> [--yes]               Удалить portal profile.
 
   add-client <client-name> [--qr] [--json]          Создать WG-клиента, напечатать конфиг (+ QR в stderr).
-                                                    --json: конфиг в поле config_b64. Код 3 — имя занято.
+                                                    --json: конфиг в поле config_b64.
+                                                    Коды: 10 — имя занято, 11 — занята блокировка.
   remove-client <client-name> [--yes]               Удалить клиента. Отсутствующий — не ошибка.
   list-clients [--json]                             Показать клиентов.
 

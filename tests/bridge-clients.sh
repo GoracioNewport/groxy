@@ -17,10 +17,12 @@ SUBNET=10.66.66.0/24
 LISTEN_PORT=51820
 PUBLIC_IP=203.0.113.1
 EOF
-printf 'fakeserverprivatekey000000000000000000000000=\n' \
-    > "${GROXY_DIR}/bridge/wg0/private.key"
-printf 'fakeserverpublickey0000000000000000000000000=\n' \
-    > "${GROXY_DIR}/bridge/wg0/public.key"
+# Ключи обязаны иметь настоящую форму: 43 символа base64 плюс '='. Валидация
+# ключа сервера в add-client отвергает произвольную строку, и должна — именно
+# пустой или обрезанный public.key раньше уезжал в выданный клиенту конфиг.
+fake_key() { printf 'fakekey%036d=\n' "$1"; }
+fake_key 900 > "${GROXY_DIR}/bridge/wg0/private.key"
+fake_key 901 > "${GROXY_DIR}/bridge/wg0/public.key"
 
 # shellcheck source=/dev/null
 source "${REPO}/lib/common.sh"
@@ -34,9 +36,13 @@ source "${REPO}/lib/bridge_wg0.sh"
 # --- подмены внешнего мира ------------------------------------------------
 require_root() { :; }
 acquire_state_lock() { :; }   # /run недоступен вне root
-wg_sync_peers() { :; }
-bridge_render_wg0_conf() { :; }
 apt_install() { :; }
+# Счётчики вместо пустых заглушек: часть проверок ниже смотрит именно на то,
+# был ли вызван рендер и синхронизация, а не только на код возврата.
+render_calls=0
+sync_calls=0
+wg_sync_peers() { sync_calls=$((sync_calls + 1)); }
+bridge_render_wg0_conf() { render_calls=$((render_calls + 1)); }
 _n=0
 wg() {
     case "$1" in
@@ -70,7 +76,7 @@ echo "== повторное создание того же имени =="
 # Подоболочка обязательна: die_code вызывает exit, и без неё он завершил бы
 # сам тест вместо проверяемой функции.
 ( bridge_add_client alpha ) >/dev/null 2>&1; rc=$?
-check "отдельный код 3, а не общий 1" 3 "${rc}"
+check "отдельный код 10, а не общий 1" 10 "${rc}"
 
 echo "== следующий клиент получает следующий адрес =="
 out=$(bridge_add_client beta 2>/dev/null)
@@ -99,8 +105,72 @@ check "файл исчез" 0 \
     "$(find "${GROXY_DIR}/bridge/wg0/clients" -name 'beta.peer' | wc -l | tr -d ' ')"
 
 echo "== повторное удаление отсутствующего =="
+render_calls=0; sync_calls=0
 ( bridge_remove_client beta --yes ) >/dev/null 2>&1; rc=$?
 check "успех, а не ошибка" 0 "${rc}"
+# Суть блокера: раньше ранний return отдавал успех, не тронув ни конфиг, ни
+# ядро — оборванное первое удаление оставляло пира живым, а повтор рапортовал,
+# что доступ отозван.
+bridge_remove_client beta --yes >/dev/null 2>&1
+check "отсутствующий клиент всё равно реконсилится: рендер" 1 "${render_calls}"
+check "отсутствующий клиент всё равно реконсилится: синхронизация" 1 "${sync_calls}"
+
+echo "== испорченный файл пира не ломает список =="
+printf 'PSK=x\nADDR=10.66.66.9\nPUBLIC_KEY=y\nsep=\nname=OVERRIDDEN\n' \
+    > "${GROXY_DIR}/bridge/wg0/clients/nasty.peer"
+out=$(bridge_list_clients --json 2>/dev/null)
+if command -v python3 >/dev/null; then
+    check "JSON остаётся валидным" ok \
+        "$(python3 -c 'import json,sys; json.load(sys.stdin); print("ok")' \
+            <<<"${out}" 2>/dev/null)"
+fi
+check "поле name не подменилось" 0 "$(grep -c OVERRIDDEN <<<"${out}")"
+rm -f "${GROXY_DIR}/bridge/wg0/clients/nasty.peer"
+
+echo "== файл с недопустимым именем пропускается =="
+printf 'ADDR=10.66.66.8\nPUBLIC_KEY=z\n' \
+    > "${GROXY_DIR}/bridge/wg0/clients/ev\"il.peer"
+out=$(bridge_list_clients --json 2>/dev/null)
+if command -v python3 >/dev/null; then
+    check "JSON валиден при постороннем файле" ok \
+        "$(python3 -c 'import json,sys; json.load(sys.stdin); print("ok")' \
+            <<<"${out}" 2>/dev/null)"
+fi
+rm -f "${GROXY_DIR}/bridge/wg0/clients/ev\"il.peer"
+
+echo "== пустой публичный ключ сервера =="
+cp "${GROXY_DIR}/bridge/wg0/public.key" "${TMPROOT}/pub.bak"
+: > "${GROXY_DIR}/bridge/wg0/public.key"
+( bridge_add_client withemptykey ) >/dev/null 2>&1; rc=$?
+check "отказ, а не выдача битого конфига" 1 "${rc}"
+cp "${TMPROOT}/pub.bak" "${GROXY_DIR}/bridge/wg0/public.key"
+rm -f "${GROXY_DIR}/bridge/wg0/clients/withemptykey.peer"
+
+echo "== исчерпанная подсеть =="
+for i in $(seq 2 254); do
+    printf 'PSK=x\nADDR=10.66.66.%d\nPUBLIC_KEY=y\n' "${i}" \
+        > "${GROXY_DIR}/bridge/wg0/clients/fill${i}.peer"
+done
+out=$( ( bridge_add_client overflow ) 2>/dev/null ); rc=$?
+check "отказ вместо адреса вида 10.66.66." 1 "${rc}"
+check "битый пир не создан" 0 \
+    "$(find "${GROXY_DIR}/bridge/wg0/clients" -name 'overflow.peer' | wc -l | tr -d ' ')"
+rm -f "${GROXY_DIR}"/bridge/wg0/clients/fill*.peer
+
+echo "== wg_sync_peers не синхронизирует пустой конфиг =="
+# Заглушка выше перезаписала функцию модуля, поэтому её надо вернуть, а не
+# просто снять: unset -f оставил бы пустоту.
+# shellcheck source=/dev/null
+source "${REPO}/lib/wireguard.sh"
+systemctl() { [[ "$1" == 'is-active' ]] && return 0; return 0; }
+synced=0
+wg() { case "$1" in syncconf) synced=$((synced + 1)) ;; *) : ;; esac }
+wg-quick() { return 1; }   # strip падает
+( wg_sync_peers wg0 ) >/dev/null 2>&1; rc=$?
+check "падение wg-quick strip — отказ" 1 "${rc}"
+wg-quick() { : ; }         # strip успешен, но вывод пуст
+( wg_sync_peers wg0 ) >/dev/null 2>&1; rc=$?
+check "пустой вывод strip — отказ" 1 "${rc}"
 
 echo
 echo "прошло: ${pass}, упало: ${fail}"

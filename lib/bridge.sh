@@ -204,6 +204,11 @@ EOF
 # services with the current /etc/groxy/bridge/ state. Idempotent.
 bridge_apply() {
     require_root
+    # apply re-renders the same wg0.conf that add-client writes into. Without
+    # the lock it could render from a half-written clients directory while a
+    # bot was mid-add, publishing a config missing the peer that was just
+    # promised to a user.
+    acquire_state_lock
     [[ -f "${GROXY_DIR}/bridge/current-portal" ]] \
         || die "bridge not initialised — run 'groxy init bridge --portal-profile=...' first"
 

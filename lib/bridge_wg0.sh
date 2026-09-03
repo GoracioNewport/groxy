@@ -57,14 +57,12 @@ _bridge_wg0_base() {
 # Print first free last-octet in [2..254] not used by any client.
 _bridge_wg0_alloc_octet() {
     local cfg_dir="${GROXY_DIR}/bridge/wg0"
-    local peer_file ADDR i used
+    local peer_file addr i used
     used=$(
         for peer_file in "${cfg_dir}"/clients/*.peer; do
             [[ -e "${peer_file}" ]] || continue
-            ADDR=''
-            # shellcheck source=/dev/null
-            source "${peer_file}"
-            [[ -n "${ADDR}" ]] && printf '%s\n' "${ADDR##*.}"
+            addr=$(peer_field "${peer_file}" ADDR)
+            [[ -n "${addr}" ]] && printf '%s\n' "${addr##*.}"
         done | sort -n
     )
     for ((i = 2; i <= 254; i++)); do
@@ -127,21 +125,32 @@ PostDown = iptables -t nat -D POSTROUTING -s ${SUBNET} ! -o wg1 -j MASQUERADE 2>
 PostUp = iptables -t mangle -C FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320 2>/dev/null || iptables -t mangle -A FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320
 PostDown = iptables -t mangle -D FORWARD -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1320 2>/dev/null || true
 EOF
-        local peer_file name PSK ADDR PUBLIC_KEY
+        # Every field is validated before it reaches the config. A peer file
+        # with a missing ADDR used to render `AllowedIPs = /32`, which wg
+        # rejects — and it rejects the WHOLE file, so one damaged peer took
+        # every client down rather than just itself. Refusing loudly here beats
+        # writing a config that cannot load.
+        local peer_file name psk addr pubkey
         for peer_file in "${cfg_dir}"/clients/*.peer; do
             [[ -e "${peer_file}" ]] || continue
             name=$(basename "${peer_file}" .peer)
-            PSK=''; ADDR=''; PUBLIC_KEY=''
-            # shellcheck source=/dev/null
-            source "${peer_file}"
-            [[ -n "${PUBLIC_KEY}" ]] || continue
+            psk=$(peer_field "${peer_file}" PSK)
+            addr=$(peer_field "${peer_file}" ADDR)
+            pubkey=$(peer_field "${peer_file}" PUBLIC_KEY)
+
+            [[ -n "${pubkey}" ]] || continue
+            validate_wg_key "${pubkey}" "public key in ${peer_file}"
+            [[ -n "${psk}" ]] && validate_wg_key "${psk}" "preshared key in ${peer_file}"
+            [[ "${addr}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] \
+                || die "invalid ADDR '${addr}' in ${peer_file}"
+
             cat <<EOF
 
 # client: ${name}
 [Peer]
-PublicKey = ${PUBLIC_KEY}
-PresharedKey = ${PSK}
-AllowedIPs = ${ADDR}/32
+PublicKey = ${pubkey}
+PresharedKey = ${psk}
+AllowedIPs = ${addr}/32
 EOF
         done
     } | write_atomic /etc/wireguard/wg0.conf 600
@@ -168,6 +177,14 @@ bridge_add_client() {
     [[ -n "${name}" ]] || die "usage: groxy bridge add-client <name> [--qr] [--json]"
     validate_peer_name "${name}"
 
+    # Before the lock, deliberately. apt can take tens of seconds and can block
+    # on dpkg's own lock; holding the state lock through that made an unrelated
+    # remove-client time out, and a failure here after the client was already
+    # created reported a completed operation as a failure.
+    if (( want_qr )) && ! has_command qrencode; then
+        apt_install qrencode
+    fi
+
     # Taken before the free-octet scan: the scan reads every peer file and
     # then writes one, so without the lock a concurrent run allocates the
     # same address.
@@ -191,7 +208,14 @@ bridge_add_client() {
     source "${cfg_dir}/server.env"
 
     local octet base addr psk priv pub server_pub server_ip
-    octet=$(_bridge_wg0_alloc_octet)
+    # The `die` inside _bridge_wg0_alloc_octet runs in a command substitution,
+    # so it only kills the subshell: without this check a full subnet produced
+    # an empty octet, an ADDR of "10.66.66." and a peer whose AllowedIPs line
+    # wg refuses — taking the whole config down, not just this client.
+    octet=$(_bridge_wg0_alloc_octet) \
+        || die "could not allocate an address in ${SUBNET}"
+    [[ "${octet}" =~ ^[0-9]+$ ]] \
+        || die "address allocation returned '${octet}' — subnet ${SUBNET} may be exhausted"
     base=$(_bridge_wg0_base "${SUBNET}")
     addr="${base}${octet}"
     psk=$(wg genpsk)
@@ -210,7 +234,11 @@ EOF
     wg_sync_peers wg0
     log "wg0 peers synced"
 
+    # An empty public.key reads successfully and yields a config with a blank
+    # PublicKey — accepted silently and handed out as working. wg_ensure_keypair
+    # can leave one behind if it is interrupted, so check rather than trust.
     server_pub=$(<"${cfg_dir}/public.key")
+    validate_wg_key "${server_pub}" "server public key (${cfg_dir}/public.key)"
     server_ip=$(_bridge_wg0_server_ip "${SUBNET}")
 
     # Client config — DNS=bridge's wg0 IP так что whitelist через dnsmasq
@@ -231,16 +259,26 @@ PersistentKeepalive = 25
 ' "${name}" "${priv}" "${addr}" "${server_ip}" "${server_pub}" "${psk}" "${PUBLIC_IP}" "${LISTEN_PORT}"
     if (( want_json )); then
         # The config is carried base64-encoded: it is multi-line and contains
-        # characters that would need escaping, and a caller decoding one
-        # field beats a caller unescaping a string.
+        # characters that would need escaping, and a caller decoding one field
+        # beats a caller unescaping a string.
+        #
+        # Encoded into a variable first, and checked. Inline in the printf
+        # argument, a failing base64 produced an empty config_b64 while printf
+        # itself still returned 0 — valid JSON, successful exit, and a user
+        # handed an empty file for a client that now exists and cannot be
+        # recreated under the same name.
+        local encoded
+        encoded=$(printf '%s' "${client_conf}" | base64 -w0) \
+            || die "failed to encode the client config"
+        [[ -n "${encoded}" ]] || die "encoded client config is empty"
         printf '{"name":"%s","address":"%s","config_b64":"%s"}\n' \
-            "${name}" "${addr}" "$(printf '%s' "${client_conf}" | base64 -w0)"
+            "${name}" "${addr}" "${encoded}"
     else
         printf '%s' "${client_conf}"
     fi
 
     if (( want_qr )); then
-        apt_install qrencode
+        # qrencode уже поставлен выше, до захвата блокировки.
         # ANSI-UTF8 QR в stderr — не загрязняет stdout (если юзер делает > file.conf).
         printf '%s' "${client_conf}" | qrencode -t ansiutf8 >&2
     fi
@@ -261,19 +299,29 @@ bridge_list_clients() {
     [[ -d "${cfg_dir}/clients" ]] \
         || die "bridge not initialised — run 'groxy init bridge --portal-profile=...' first"
 
-    local peer_file name PSK ADDR PUBLIC_KEY sep=''
+    local peer_file name addr pubkey sep=''
     if (( want_json )); then
-        # Names pass validate_peer_name and addresses are IPv4, so both are
-        # already safe inside JSON strings — no escaping needed here.
+        # add-client only ever creates names that pass validate_peer_name, but
+        # files also arrive in this directory by other routes — a restore from
+        # backup, an rsync from an old node, a hand edit. A file literally named
+        # `ev"il.peer` produced `{"name":"ev"il",...}` and broke parsing of the
+        # entire list, so the name is checked on the way OUT, not only in.
         printf '['
         for peer_file in "${cfg_dir}"/clients/*.peer; do
             [[ -e "${peer_file}" ]] || continue
             name=$(basename "${peer_file}" .peer)
-            ADDR=''; PUBLIC_KEY=''
-            # shellcheck source=/dev/null
-            source "${peer_file}"
+            if [[ ! "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]]; then
+                log "warning: skipping '${peer_file}' — name is not a valid peer name"
+                continue
+            fi
+            addr=$(peer_field "${peer_file}" ADDR)
+            pubkey=$(peer_field "${peer_file}" PUBLIC_KEY)
+            if [[ ! "${addr}" =~ ^[0-9.]*$ ]] || [[ ! "${pubkey}" =~ ^[A-Za-z0-9+/=]*$ ]]; then
+                log "warning: skipping '${peer_file}' — field would not be safe in JSON"
+                continue
+            fi
             printf '%s{"name":"%s","address":"%s","public_key":"%s"}' \
-                "${sep}" "${name}" "${ADDR}" "${PUBLIC_KEY}"
+                "${sep}" "${name}" "${addr}" "${pubkey}"
             sep=','
         done
         printf ']\n'
@@ -284,10 +332,8 @@ bridge_list_clients() {
     for peer_file in "${cfg_dir}"/clients/*.peer; do
         [[ -e "${peer_file}" ]] || continue
         name=$(basename "${peer_file}" .peer)
-        ADDR=''
-        # shellcheck source=/dev/null
-        source "${peer_file}"
-        printf '%-20s %s\n' "${name}" "${ADDR}"
+        addr=$(peer_field "${peer_file}" ADDR)
+        printf '%-20s %s\n' "${name}" "${addr}"
     done
 }
 
@@ -310,17 +356,26 @@ bridge_remove_client() {
     validate_peer_name "${name}"
     acquire_state_lock
 
-    local peer_file="${GROXY_DIR}/bridge/wg0/clients/${name}.peer"
-    # Absent is success, not an error: the desired end state is "this client
-    # does not exist", and it already holds. That makes a retry after a lost
-    # response safe instead of leaving the caller to guess.
-    if [[ ! -e "${peer_file}" ]]; then
-        log "client '${name}' not present — nothing to remove"
-        return 0
+    local cfg_dir="${GROXY_DIR}/bridge/wg0"
+    [[ -f "${cfg_dir}/server.env" ]] \
+        || die "bridge not initialised — run 'groxy init bridge --portal-profile=...' first"
+
+    local peer_file="${cfg_dir}/clients/${name}.peer"
+
+    # Absent is success, not an error — the desired end state already holds.
+    # But state lives in three places, not one: the peer file, wg0.conf and the
+    # kernel. Judging by the file alone and returning early was wrong: a first
+    # run that deleted the file and then died left the peer still live in the
+    # kernel, and the retry cheerfully reported success without revoking
+    # anything. So reconcile unconditionally and let the sync be the thing that
+    # decides we are done.
+    if [[ -e "${peer_file}" ]]; then
+        rm -f "${peer_file}"
+        log "removed client '${name}'"
+    else
+        log "client '${name}' not present — reconciling anyway"
     fi
 
-    rm -f "${peer_file}"
-    log "removed client '${name}'"
     bridge_render_wg0_conf
     wg_sync_peers wg0
     log "wg0 peers synced"
