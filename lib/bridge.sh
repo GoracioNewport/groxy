@@ -202,6 +202,24 @@ EOF
 
 # `groxy apply` for the bridge role — re-render all configs and reconcile
 # services with the current /etc/groxy/bridge/ state. Idempotent.
+# True when the running wg0 already carries the address the config asks for.
+# Returns false when the interface is down, which correctly routes a first
+# start through wg_quick_enable_restart rather than through a peer sync.
+_bridge_wg0_address_matches() {
+    systemctl is-active --quiet wg-quick@wg0 || return 1
+
+    local cfg_dir="${GROXY_DIR}/bridge/wg0"
+    local SUBNET='' LISTEN_PORT='' PUBLIC_IP=''
+    # shellcheck source=/dev/null
+    source "${cfg_dir}/server.env"
+    [[ -n "${SUBNET}" ]] || return 1
+
+    local want current
+    want="$(_bridge_wg0_server_ip "${SUBNET}")/${SUBNET#*/}"
+    current=$(ip -brief -4 addr show wg0 2>/dev/null | awk '{print $3}')
+    [[ "${current}" == "${want}" ]]
+}
+
 bridge_apply() {
     require_root
     # apply re-renders the same wg0.conf that add-client writes into. Without
@@ -226,10 +244,23 @@ bridge_apply() {
     log "rendering /etc/wireguard/wg0.conf"
     bridge_render_wg0_conf
 
+    # wg1 carries one peer and its PostUp owns the policy-routing rules, so a
+    # restart there is cheap and sometimes necessary.
     log "restarting wg-quick@wg1"
     wg_quick_enable_restart wg1
-    log "restarting wg-quick@wg0"
-    wg_quick_enable_restart wg0
+
+    # wg0 carries 36 client sessions. Restarting it re-handshakes every one and
+    # resets the kernel's per-peer counters — the same counters the bot reports
+    # traffic from. So restart only when something syncconf genuinely cannot
+    # apply: the interface address, which belongs to `ip addr` rather than to
+    # wg. Otherwise reconcile the peers and leave the sessions alone.
+    if _bridge_wg0_address_matches; then
+        log "syncing wg0 peers (address unchanged, sessions preserved)"
+        wg_sync_peers wg0
+    else
+        log "restarting wg-quick@wg0 (interface address changed — clients will re-handshake)"
+        wg_quick_enable_restart wg0
+    fi
 
     log "reconciling dnsmasq + whitelist feeds with current settings"
     bridge_apply_settings
