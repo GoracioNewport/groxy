@@ -170,6 +170,7 @@ EOF
 
     log "enabling IPv4 forwarding"
     sysctl_set net.ipv4.ip_forward 1
+    ensure_conntrack_capacity
 
     log "rendering /etc/wireguard/wg1.conf (full mangle)"
     bridge_render_wg1_conf
@@ -208,6 +209,7 @@ bridge_apply() {
 
     log "ensuring IPv4 forwarding"
     sysctl_set net.ipv4.ip_forward 1
+    ensure_conntrack_capacity
 
     log "ensuring routing table + ipset definitions"
     bridge_ensure_rt_table

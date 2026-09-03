@@ -178,6 +178,7 @@ EOF
 
     log "enabling IPv4 forwarding"
     sysctl_set net.ipv4.ip_forward 1
+    ensure_conntrack_capacity
 
     log "rendering /etc/wireguard/wg0.conf"
     portal_render_wg0_conf
@@ -363,6 +364,7 @@ portal_apply() {
 
     log "ensuring IPv4 forwarding"
     sysctl_set net.ipv4.ip_forward 1
+    ensure_conntrack_capacity
 
     log "rendering /etc/wireguard/wg0.conf"
     portal_render_wg0_conf

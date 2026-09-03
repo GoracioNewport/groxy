@@ -96,3 +96,46 @@ sysctl_set() {
     printf '%s = %s\n' "${key}" "${value}" >> "${path}"
     sysctl -q -w "${key}=${value}" >/dev/null
 }
+
+# Give conntrack enough room for a node that forwards a whole fleet.
+#
+# The kernel derives nf_conntrack_max from RAM at boot. On the 960 MB portal
+# that lands at 8192 — and every foreign connection of every client crosses
+# that one node. A page of images opens hundreds of connections per client, so
+# a few people browsing at once can fill the table; once full, new connections
+# are dropped and it looks to the user like the internet stopped.
+#
+# Cost is roughly 330 bytes per entry, so 65536 entries is about 21 MB —
+# affordable even on the small portal. The hash table is sized to match:
+# raising the ceiling alone only makes the chains longer.
+#
+# Idempotent, and a no-op on kernels where conntrack is not loaded.
+ensure_conntrack_capacity() {
+    local want=65536
+    local max_path='/proc/sys/net/netfilter/nf_conntrack_max'
+    local hash_path='/sys/module/nf_conntrack/parameters/hashsize'
+
+    [[ -r "${max_path}" ]] || return 0
+
+    local current
+    current=$(<"${max_path}")
+    if [[ "${current}" =~ ^[0-9]+$ ]] && (( current < want )); then
+        log "raising nf_conntrack_max ${current} -> ${want}"
+        sysctl_set net.netfilter.nf_conntrack_max "${want}"
+    fi
+
+    # hashsize is a module parameter rather than a sysctl, so it needs both a
+    # live write and a modprobe.d entry to survive a reboot.
+    if [[ -w "${hash_path}" ]]; then
+        local buckets
+        buckets=$(<"${hash_path}")
+        if [[ "${buckets}" =~ ^[0-9]+$ ]] && (( buckets < want )); then
+            printf '%s\n' "${want}" > "${hash_path}" || true
+        fi
+    fi
+
+    write_atomic /etc/modprobe.d/99-groxy-conntrack.conf 644 <<EOF
+# Managed by groxy ${GROXY_VERSION}. Do not edit by hand.
+options nf_conntrack hashsize=${want}
+EOF
+}
