@@ -65,6 +65,15 @@ bridge_apply_settings() {
     local WHITELIST_OPENCCK WHITELIST_CUSTOM WHITELIST_GEOIP
     bridge_settings_load
 
+    # Основной конфиг перерендеривается здесь же, а не только в init.
+    #
+    # Он теперь зависит от содержимого фида: список российских суффиксов, для
+    # которых резолвер пиннится на прямой путь, собирается из тех же файлов.
+    # Без этого вызова обновление whitelist'а меняло бы ipset, но не географию
+    # резолва, и выкатить правку можно было бы только через `groxy apply`,
+    # который перезапускает wg1 и рвёт зарубежный трафик всем клиентам.
+    bridge_render_dnsmasq_conf
+
     # DNS feeds → dnsmasq.d/ files.
     if [[ "${WHITELIST_OPENCCK}" == 'on' ]]; then
         bridge_render_opencck_conf

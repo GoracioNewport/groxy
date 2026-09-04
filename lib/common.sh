@@ -10,6 +10,11 @@ readonly GROXY_DIR="${GROXY_DIR:-/etc/groxy}"
 # /etc/wireguard meant no test could watch it happen.
 readonly GROXY_WG_DIR="${GROXY_WG_DIR:-/etc/wireguard}"
 
+# То же для основного конфига dnsmasq: он теперь собирается из фида, и
+# отрендерить его во временный файл, чтобы прогнать `dnsmasq --test`, надо
+# уметь без права переписать живой.
+readonly GROXY_DNSMASQ_CONF="${GROXY_DNSMASQ_CONF:-/etc/dnsmasq.conf}"
+
 # Log to stderr with an ISO-8601 timestamp.
 log() {
     printf '[%(%Y-%m-%dT%H:%M:%S%z)T] %s\n' -1 "$*" >&2

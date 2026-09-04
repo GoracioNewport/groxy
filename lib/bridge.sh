@@ -93,6 +93,20 @@ PostUp = iptables -A FORWARD -i wg0 -o %i -j ACCEPT
 PostUp = iptables -A FORWARD -i %i -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
 PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE
 
+# Резолверы для зарубежных доменов уводятся в туннель host-маршрутами.
+#
+# Это и есть починка географии: dnsmasq спрашивает Cloudflare, запрос уходит
+# через портал, и CDN видит нидерландскую подсеть вместо московской. Без этих
+# трёх строк Akamai отдавал Steam узел в 138 мс от портала вместо 4 мс —
+# замеры в docs/DNS-BASELINE.md.
+#
+# 9.9.9.9 никем не используется и служит пробой: он идёт через туннель ВСЕГДА,
+# независимо от состояния двух маршрутов выше, поэтому по нему можно проверить
+# живость плеча, не завися от того, что проверяешь.
+PostUp = ip route add 1.1.1.1/32 dev %i src ${TUNNEL_BRIDGE_IP}
+PostUp = ip route add 1.0.0.1/32 dev %i src ${TUNNEL_BRIDGE_IP}
+PostUp = ip route add 9.9.9.9/32 dev %i src ${TUNNEL_BRIDGE_IP}
+
 PostDown = ip rule del fwmark 0x1 lookup vpn2 priority 100 2>/dev/null || true
 PostDown = ip route del default dev %i table vpn2 2>/dev/null || true
 PostDown = iptables -t mangle -D PREROUTING -i wg0 -j MARK --set-mark 0x1 2>/dev/null || true
@@ -101,6 +115,9 @@ PostDown = iptables -t mangle -D PREROUTING -i wg0 -m set --match-set ru_cidrs d
 PostDown = iptables -D FORWARD -i wg0 -o %i -j ACCEPT 2>/dev/null || true
 PostDown = iptables -D FORWARD -i %i -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
 PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE 2>/dev/null || true
+PostDown = ip route del 1.1.1.1/32 dev %i 2>/dev/null || true
+PostDown = ip route del 1.0.0.1/32 dev %i 2>/dev/null || true
+PostDown = ip route del 9.9.9.9/32 dev %i 2>/dev/null || true
 
 [Peer]
 PublicKey = ${PORTAL_PUBKEY}
