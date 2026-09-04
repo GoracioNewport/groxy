@@ -103,9 +103,14 @@ PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE
 # 9.9.9.9 никем не используется и служит пробой: он идёт через туннель ВСЕГДА,
 # независимо от состояния двух маршрутов выше, поэтому по нему можно проверить
 # живость плеча, не завися от того, что проверяешь.
-PostUp = ip route add 1.1.1.1/32 dev %i src ${TUNNEL_BRIDGE_IP}
-PostUp = ip route add 1.0.0.1/32 dev %i src ${TUNNEL_BRIDGE_IP}
-PostUp = ip route add 9.9.9.9/32 dev %i src ${TUNNEL_BRIDGE_IP}
+#
+# `replace`, а не `add`: маршруты могли быть поставлены руками при выкате, и
+# `add` на существующий вернул бы «File exists». wg-quick выполняет PostUp с
+# прерыванием на первой ошибке, так что интерфейс просто не поднялся бы, и все
+# 36 клиентов остались бы без зарубежного трафика.
+PostUp = ip route replace 1.1.1.1/32 dev %i src ${TUNNEL_BRIDGE_IP}
+PostUp = ip route replace 1.0.0.1/32 dev %i src ${TUNNEL_BRIDGE_IP}
+PostUp = ip route replace 9.9.9.9/32 dev %i src ${TUNNEL_BRIDGE_IP}
 
 PostDown = ip rule del fwmark 0x1 lookup vpn2 priority 100 2>/dev/null || true
 PostDown = ip route del default dev %i table vpn2 2>/dev/null || true
