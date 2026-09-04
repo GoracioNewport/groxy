@@ -93,9 +93,11 @@ Subcommands:
   list-portals                                      Показать доступные portal'ы.
   remove-portal <portal-name> [--yes]               Удалить portal profile.
 
-  add-client <client-name> [--qr]                   Создать WG-клиента, напечатать конфиг (+ QR в stderr).
-  remove-client <client-name> [--yes]               Удалить клиента.
-  list-clients                                      Показать клиентов.
+  add-client <client-name> [--qr] [--json]          Создать WG-клиента, напечатать конфиг (+ QR в stderr).
+                                                    --json: конфиг в поле config_b64.
+                                                    Коды: 10 — имя занято, 11 — занята блокировка.
+  remove-client <client-name> [--yes]               Удалить клиента. Отсутствующий — не ошибка.
+  list-clients [--json]                             Показать клиентов.
 
   whitelist <update|reload|set-source>              Управление whitelist'ом доменов.
   geoip <update|set-source>                         Управление GeoIP-карв-аутом (ipset ru_cidrs).

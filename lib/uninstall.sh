@@ -89,6 +89,7 @@ bridge_uninstall() {
 
 cmd_uninstall_real() {
     require_root
+    acquire_state_lock
     local arg yes=0
     for arg in "$@"; do
         case "${arg}" in

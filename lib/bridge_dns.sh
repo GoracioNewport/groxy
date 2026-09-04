@@ -231,6 +231,7 @@ bridge_init_dns() {
 # 00-opencck.conf from their sources, restart dnsmasq.
 bridge_whitelist_reload() {
     require_root
+    acquire_state_lock
     local dir="${GROXY_DIR}/bridge/whitelist"
     [[ -d "${dir}" ]] || die "whitelist not initialised — run 'groxy init bridge' first"
     log "applying settings (respects opencck/custom/geoip toggles)"
@@ -241,6 +242,7 @@ bridge_whitelist_reload() {
 # source URL. Doesn't fetch — call `whitelist update` to refresh.
 bridge_whitelist_set_source() {
     require_root
+    acquire_state_lock
     local arg url=''
     for arg in "$@"; do
         case "${arg}" in
@@ -279,6 +281,10 @@ bridge_whitelist_set_source() {
 # Treats fetch failures as soft: keeps previous list intact, logs warning.
 bridge_whitelist_update() {
     require_root
+    # Запускается ежедневно по таймеру, то есть может совпасть с чем угодно.
+    # Перестраивает ru_cidrs через общий временный набор, и одновременный
+    # `groxy apply` получал ошибку на его удалении.
+    acquire_state_lock
     local dir="${GROXY_DIR}/bridge/whitelist"
     [[ -d "${dir}" ]] || die "whitelist not initialised — run 'groxy init bridge' first"
 

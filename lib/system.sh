@@ -87,6 +87,16 @@ write_atomic() {
 # Persist a sysctl key in /etc/sysctl.d/99-groxy.conf and apply it
 # immediately. Idempotent — replaces any existing line for the same key.
 sysctl_set() {
+    sysctl_persist "$1" "$2"
+    sysctl -q -w "$1=$2" >/dev/null
+}
+
+# Записать sysctl в /etc/sysctl.d/99-groxy.conf, НЕ применяя его сейчас.
+#
+# Нужно там, где ключа в /proc может ещё не быть: nf_conntrack — загружаемый
+# модуль, и на свежем узле его нет до первого NAT. Попытка применить такой ключ
+# завершилась бы ошибкой и под set -e уронила бы установку.
+sysctl_persist() {
     local key="$1" value="$2" path='/etc/sysctl.d/99-groxy.conf'
     mkdir -p /etc/sysctl.d
     if [[ -f "${path}" ]]; then
@@ -94,5 +104,71 @@ sysctl_set() {
         sed -i "/^${key//./\\.}[[:space:]]*=/d" "${path}"
     fi
     printf '%s = %s\n' "${key}" "${value}" >> "${path}"
-    sysctl -q -w "${key}=${value}" >/dev/null
+}
+
+# Give conntrack enough room for a node that forwards a whole fleet.
+#
+# The kernel derives nf_conntrack_max from RAM at boot. On the 960 MB portal
+# that lands at 8192 — and every foreign connection of every client crosses
+# that one node. A page of images opens hundreds of connections per client, so
+# a few people browsing at once can fill the table; once full, new connections
+# are dropped and it looks to the user like the internet stopped.
+#
+# Cost is roughly 330 bytes per entry, so 65536 entries is about 21 MB —
+# affordable even on the small portal. The hash table is sized to match:
+# raising the ceiling alone only makes the chains longer.
+#
+# Idempotent, and a no-op on kernels where conntrack is not loaded.
+ensure_conntrack_capacity() {
+    local want=65536
+    local max_path='/proc/sys/net/netfilter/nf_conntrack_max'
+    local hash_path='/sys/module/nf_conntrack/parameters/hashsize'
+
+    # Файлы пишутся ПЕРВЫМИ и безусловно. Раньше выше стоял ранний выход по
+    # читаемости /proc-ключа, а init обеих ролей зовёт эту функцию до того, как
+    # wg-quick поднимет NAT и подтянет nf_conntrack. На чистом узле ключа ещё
+    # нет — и не писалось ни одного из трёх файлов, то есть ровно в сценарии
+    # «разворачиваем новый портал» настройка не применялась вовсе.
+
+    # Загрузка модуля на старте. Без неё nf_conntrack появляется только когда
+    # что-то запросит NAT, то есть много позже systemd-sysctl: ключа на момент
+    # применения не существует, и запись в sysctl.d молча пропадает.
+    # systemd-sysctl упорядочен после systemd-modules-load, поэтому загрузка
+    # здесь делает sysctl применимым.
+    write_atomic /etc/modules-load.d/99-groxy-conntrack.conf 644 <<EOF
+# Managed by groxy ${GROXY_VERSION}. Do not edit by hand.
+nf_conntrack
+EOF
+
+    write_atomic /etc/modprobe.d/99-groxy-conntrack.conf 644 <<EOF
+# Managed by groxy ${GROXY_VERSION}. Do not edit by hand.
+options nf_conntrack hashsize=${want}
+EOF
+
+    # Потолок пишется ВСЕГДА, а не только когда он ниже желаемого.
+    #
+    # Явный hashsize меняет то, как ядро выводит nf_conntrack_max при загрузке
+    # модуля: множитель остаётся равным восьми, и вместо 65536 получается
+    # 524288 — на узле с 960 МБ это около 170 МБ вместо 21. Раньше строка не
+    # писалась, если текущее значение уже равнялось желаемому, и тогда после
+    # перезагрузки вернуть потолок было некому.
+    sysctl_persist net.netfilter.nf_conntrack_max "${want}"
+
+    # Живое применение — только если ядро уже знает про conntrack.
+    [[ -r "${max_path}" ]] || return 0
+
+    local current
+    current=$(<"${max_path}")
+    if [[ "${current}" =~ ^[0-9]+$ ]] && (( current != want )); then
+        log "setting nf_conntrack_max ${current} -> ${want}"
+        sysctl -q -w "net.netfilter.nf_conntrack_max=${want}" >/dev/null || true
+    fi
+
+    if [[ -w "${hash_path}" ]]; then
+        local buckets
+        buckets=$(<"${hash_path}")
+        if [[ "${buckets}" =~ ^[0-9]+$ ]] && (( buckets < want )); then
+            printf '%s\n' "${want}" > "${hash_path}" || true
+        fi
+    fi
 }

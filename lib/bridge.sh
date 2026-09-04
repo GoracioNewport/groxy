@@ -117,6 +117,7 @@ EOF
 # Idempotent.
 bridge_init() {
     require_root
+    acquire_state_lock
     _bridge_parse_init_flags "$@"
     require_supported_os
 
@@ -170,6 +171,7 @@ EOF
 
     log "enabling IPv4 forwarding"
     sysctl_set net.ipv4.ip_forward 1
+    ensure_conntrack_capacity
 
     log "rendering /etc/wireguard/wg1.conf (full mangle)"
     bridge_render_wg1_conf
@@ -201,13 +203,37 @@ EOF
 
 # `groxy apply` for the bridge role — re-render all configs and reconcile
 # services with the current /etc/groxy/bridge/ state. Idempotent.
+# True when the running wg0 already carries the address the config asks for.
+# Returns false when the interface is down, which correctly routes a first
+# start through wg_quick_enable_restart rather than through a peer sync.
+_bridge_wg0_address_matches() {
+    systemctl is-active --quiet wg-quick@wg0 || return 1
+
+    local cfg_dir="${GROXY_DIR}/bridge/wg0"
+    local SUBNET='' LISTEN_PORT='' PUBLIC_IP=''
+    # shellcheck source=/dev/null
+    source "${cfg_dir}/server.env"
+    [[ -n "${SUBNET}" ]] || return 1
+
+    local want current
+    want="$(_bridge_wg0_server_ip "${SUBNET}")/${SUBNET#*/}"
+    current=$(ip -brief -4 addr show wg0 2>/dev/null | awk '{print $3}')
+    [[ "${current}" == "${want}" ]]
+}
+
 bridge_apply() {
     require_root
+    # apply re-renders the same wg0.conf that add-client writes into. Without
+    # the lock it could render from a half-written clients directory while a
+    # bot was mid-add, publishing a config missing the peer that was just
+    # promised to a user.
+    acquire_state_lock
     [[ -f "${GROXY_DIR}/bridge/current-portal" ]] \
         || die "bridge not initialised — run 'groxy init bridge --portal-profile=...' first"
 
     log "ensuring IPv4 forwarding"
     sysctl_set net.ipv4.ip_forward 1
+    ensure_conntrack_capacity
 
     log "ensuring routing table + ipset definitions"
     bridge_ensure_rt_table
@@ -219,10 +245,32 @@ bridge_apply() {
     log "rendering /etc/wireguard/wg0.conf"
     bridge_render_wg0_conf
 
+    # wg1 carries one peer and its PostUp owns the policy-routing rules, so a
+    # restart there is cheap and sometimes necessary.
     log "restarting wg-quick@wg1"
     wg_quick_enable_restart wg1
-    log "restarting wg-quick@wg0"
-    wg_quick_enable_restart wg0
+
+    # wg0 carries 36 client sessions. Restarting it re-handshakes every one and
+    # resets the kernel's per-peer counters — the same counters the bot reports
+    # traffic from. So restart only when something syncconf cannot apply.
+    #
+    # syncconf applies the interface keys and the peers. It does not set the
+    # interface address, and it does not run PostUp — so the firewall rules
+    # have to be reconciled explicitly here, or apply would report success
+    # while leaving the MSS clamp and the carve-out MASQUERADE uninstalled.
+    local SUBNET=''
+    # shellcheck source=/dev/null
+    source "${GROXY_DIR}/bridge/wg0/server.env"
+    log "ensuring wg0 firewall rules"
+    bridge_ensure_wg0_rules "${SUBNET}"
+
+    if _bridge_wg0_address_matches; then
+        log "syncing wg0 peers (address unchanged, sessions preserved)"
+        wg_sync_peers wg0
+    else
+        log "restarting wg-quick@wg0 (interface address changed — clients will re-handshake)"
+        wg_quick_enable_restart wg0
+    fi
 
     log "reconciling dnsmasq + whitelist feeds with current settings"
     bridge_apply_settings

@@ -120,6 +120,7 @@ EOF
 # Top-level: `groxy init portal [flags]`. Idempotent.
 portal_init() {
     require_root
+    acquire_state_lock
     _portal_parse_init_flags "$@"
     require_supported_os
 
@@ -178,6 +179,7 @@ EOF
 
     log "enabling IPv4 forwarding"
     sysctl_set net.ipv4.ip_forward 1
+    ensure_conntrack_capacity
 
     log "rendering /etc/wireguard/wg0.conf"
     portal_render_wg0_conf
@@ -195,6 +197,11 @@ EOF
 # the peer becomes active only after `accept-bridge`.
 portal_add_bridge() {
     require_root
+    # Same race the bridge side had: _portal_alloc_octet reads every peer file,
+    # picks the first free octet, and only then writes. Two concurrent runs
+    # hand the same 10.77.77.N to two different bridges, and WireGuard then
+    # routes by whichever peer matched — silently.
+    acquire_state_lock
     local arg name='' portal_name=''
     for arg in "$@"; do
         case "${arg}" in
@@ -260,6 +267,7 @@ EOF
 # overwrite a different pubkey already on file (call remove-bridge first).
 portal_accept_bridge() {
     require_root
+    acquire_state_lock
     local arg name='' pubkey=''
     for arg in "$@"; do
         case "${arg}" in
@@ -328,6 +336,7 @@ portal_list_bridges() {
 # CLI consistency; v1 has no interactive confirmation step.
 portal_remove_bridge() {
     require_root
+    acquire_state_lock
     local arg name=''
     for arg in "$@"; do
         case "${arg}" in
@@ -358,11 +367,13 @@ portal_remove_bridge() {
 # /etc/groxy/portal/.
 portal_apply() {
     require_root
+    acquire_state_lock
     [[ -f "${GROXY_DIR}/portal/server.env" ]] \
         || die "portal not initialised — run 'groxy init portal' first"
 
     log "ensuring IPv4 forwarding"
     sysctl_set net.ipv4.ip_forward 1
+    ensure_conntrack_capacity
 
     log "rendering /etc/wireguard/wg0.conf"
     portal_render_wg0_conf

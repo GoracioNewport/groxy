@@ -16,6 +16,7 @@
 # the bridge's pubkey for use in 'portal accept-bridge' on the new portal.
 bridge_add_portal() {
     require_root
+    acquire_state_lock
     local arg name='' profile=''
     for arg in "$@"; do
         case "${arg}" in
@@ -102,6 +103,9 @@ bridge_list_portals() {
 # wg0 are unaffected (their tunnel terminates at wg0, not wg1).
 bridge_use_portal() {
     require_root
+    # Held for the whole switch: the failover monitor calls this on its own
+    # schedule, so it can collide with a hand-run command at any moment.
+    acquire_state_lock
     local arg name=''
     for arg in "$@"; do
         case "${arg}" in
@@ -141,6 +145,7 @@ bridge_use_portal() {
 # currently-active portal — call 'use-portal' first to switch.
 bridge_remove_portal() {
     require_root
+    acquire_state_lock
     local arg name=''
     for arg in "$@"; do
         case "${arg}" in
