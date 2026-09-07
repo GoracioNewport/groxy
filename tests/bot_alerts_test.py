@@ -105,6 +105,49 @@ fresh = Snapshot(NOW, HEALTHY.portal, (client("new", 0),))
 check("тревоги нет", [], keys(evaluate(fresh, HEALTHY_NODE, T, NOW)))
 
 
+print("== метрики портала ==")
+from groxy_bot.portal import PortalMetrics  # noqa: E402
+
+
+def portal(**kwargs):
+    base = dict(
+        name="nether",
+        load1=0.1,
+        cpu_count=1,
+        mem_used=300_000_000,
+        mem_total=1_000_000_000,
+        disk_used=3_000_000_000,
+        disk_total=10_000_000_000,
+        conntrack_count=100,
+        conntrack_max=65536,
+        uptime=1000,
+    )
+    base.update(kwargs)
+    return PortalMetrics(**base)
+
+
+check("здоровый портал — тревог нет", [], keys(evaluate(HEALTHY, HEALTHY_NODE, T, NOW, portal())))
+check(
+    "conntrack у потолка",
+    True,
+    "portal_conntrack" in keys(evaluate(HEALTHY, HEALTHY_NODE, T, NOW, portal(conntrack_count=60000))),
+)
+check(
+    "диск портала",
+    True,
+    "portal_disk" in keys(evaluate(HEALTHY, HEALTHY_NODE, T, NOW, portal(disk_used=9_500_000_000))),
+)
+# Ключи по порталу и по бриджу обязаны различаться: это разные поломки с
+# разными действиями, и один ключ на двоих гасил бы вторую, пока держится первая.
+both = evaluate(HEALTHY, full_disk, T, NOW, portal(disk_used=9_500_000_000))
+check("диск бриджа и диск портала — две отдельные тревоги", ["disk", "portal_disk"], keys(both))
+
+print("== reporter не установлен ==")
+# До порталов руки доходят позже, чем до бриджа. Отсутствие метрик не повод
+# для тревоги: молчание reporter'а видно в журнале, а не в Telegram.
+check("наблюдение за бриджом продолжается", [], keys(evaluate(HEALTHY, HEALTHY_NODE, T, NOW, None)))
+
+
 def make_state():
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row

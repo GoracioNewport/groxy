@@ -46,6 +46,10 @@ class Thresholds:
     # есть узел не справляется, а не «занят».
     load_per_cpu: float = 2.0
     client_silent_days: int = 30
+    # Занятость таблицы соединений на портале. Через него идёт весь зарубежный
+    # трафик парка, и упереться в потолок здесь реальнее, чем в процессор:
+    # на nether ядро вывело из 960 МБ памяти значение 8192.
+    conntrack_used_fraction: float = 0.80
     # Сколько условие должно продержаться, прежде чем о нём сообщат.
     settle_seconds: int = 180
     # Повтор о том, что всё ещё сломано. Раз в сутки: реже — забудется,
@@ -69,6 +73,7 @@ class Thresholds:
             memory_used_fraction=num("GROXY_ALERT_MEMORY", 0.90),
             load_per_cpu=num("GROXY_ALERT_LOAD", 2.0),
             client_silent_days=num("GROXY_ALERT_SILENT_DAYS", 30),
+            conntrack_used_fraction=num("GROXY_ALERT_CONNTRACK", 0.80),
             settle_seconds=num("GROXY_ALERT_SETTLE", 180),
             remind_seconds=num("GROXY_ALERT_REMIND", 86400),
         )
@@ -98,8 +103,15 @@ def evaluate(
     node: NodeState,
     thresholds: Thresholds,
     now: int,
+    portal: "PortalMetrics | None" = None,
 ) -> list[Condition]:
-    """Что не в порядке прямо сейчас. Без учёта истории и без отправки."""
+    """Что не в порядке прямо сейчас. Без учёта истории и без отправки.
+
+    `portal=None` означает, что метрик портала нет — reporter не установлен
+    или не ответил. Это не повод для тревоги сам по себе: наблюдение обязано
+    работать и без него, потому что до порталов руки доходят позже, чем до
+    бриджа. Молчание reporter'а видно в журнале, а не в Telegram.
+    """
     found: list[Condition] = []
 
     if snapshot.portal is None:
@@ -158,6 +170,9 @@ def evaluate(
                 )
             )
 
+    if portal is not None:
+        found.extend(_portal_conditions(portal, thresholds))
+
     silent_cutoff = now - thresholds.client_silent_days * 86400
     # «Ни разу не подключался» сюда не входит: это обычно свежий профиль,
     # который человеку ещё не поставили, а не потерянный доступ.
@@ -176,6 +191,62 @@ def evaluate(
                 f"{len(silent)} — {names}{more}.",
             )
         )
+
+    return found
+
+
+def _portal_conditions(portal, thresholds: Thresholds) -> list[Condition]:
+    """Тревоги по метрикам портала.
+
+    Ключи с приставкой `portal_`, чтобы не смешаться с одноимёнными по бриджу:
+    диск кончился на портале и диск кончился на бридже — разные поломки с
+    разными действиями, и один ключ на двоих гасил бы вторую, пока держится
+    первая.
+    """
+    found: list[Condition] = []
+
+    if portal.conntrack_count is not None and portal.conntrack_max:
+        used = portal.conntrack_count / portal.conntrack_max
+        if used > thresholds.conntrack_used_fraction:
+            found.append(
+                Condition(
+                    "portal_conntrack",
+                    f"Портал {portal.name}: таблица соединений занята на "
+                    f"{used * 100:.0f}% ({portal.conntrack_count} из "
+                    f"{portal.conntrack_max}). Новые соединения начнут рваться.",
+                )
+            )
+
+    if portal.disk_total and portal.disk_used is not None:
+        used = portal.disk_used / portal.disk_total
+        if used > thresholds.disk_used_fraction:
+            found.append(
+                Condition(
+                    "portal_disk",
+                    f"Портал {portal.name}: диск занят на {used * 100:.0f}%.",
+                )
+            )
+
+    if portal.mem_total and portal.mem_used is not None:
+        used = portal.mem_used / portal.mem_total
+        if used > thresholds.memory_used_fraction:
+            found.append(
+                Condition(
+                    "portal_memory",
+                    f"Портал {portal.name}: память занята на {used * 100:.0f}%.",
+                )
+            )
+
+    if portal.load1 is not None and portal.cpu_count:
+        per_cpu = portal.load1 / portal.cpu_count
+        if per_cpu > thresholds.load_per_cpu:
+            found.append(
+                Condition(
+                    "portal_load",
+                    f"Портал {portal.name}: нагрузка {portal.load1:.1f} "
+                    f"на {portal.cpu_count} ядра.",
+                )
+            )
 
     return found
 

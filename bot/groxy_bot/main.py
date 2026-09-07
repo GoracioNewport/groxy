@@ -15,7 +15,18 @@ from dataclasses import dataclass
 
 import sqlite3
 
-from . import alerts, checks, cli, config, delivery, metrics, net, telegram, ui
+from . import (
+    alerts,
+    checks,
+    cli,
+    config,
+    delivery,
+    metrics,
+    net,
+    portal,
+    telegram,
+    ui,
+)
 
 log = logging.getLogger("groxy-bot")
 
@@ -129,8 +140,14 @@ class Bot:
             resolver_answers=checks.resolver_answers(),
         )
 
+        # Метрики портала — необязательная часть: reporter может быть не
+        # установлен. Наблюдение за бриджом от этого не должно останавливаться.
+        portal_metrics = portal.fetch(self._cfg.tunnel_device)
+
         now = alerts.now_epoch()
-        conditions = alerts.evaluate(snapshot, node, self._thresholds, now)
+        conditions = alerts.evaluate(
+            snapshot, node, self._thresholds, now, portal=portal_metrics
+        )
         problems, recovered = self._alerts.reconcile(conditions, self._thresholds, now)
 
         for text in problems + recovered:

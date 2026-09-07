@@ -47,13 +47,38 @@ class TransportError(Exception):
         self.device = device
 
 
-class _BoundHTTPSConnection(http.client.HTTPSConnection):
-    """HTTPS-соединение, привязанное к сетевому устройству.
+def _bound_socket(host: str, port: int, device: str | None, timeout: float | None):
+    """Сокет, привязанный к устройству и уже соединённый.
 
     Штатный `http.client` умеет `source_address`, то есть привязку к адресу, —
-    именно то, что здесь не работает. Поэтому переопределяется `connect`:
-    сокет создаётся вручную, на него ставится `SO_BINDTODEVICE`, и только
-    потом идёт TLS.
+    именно то, что здесь не работает. Отсюда собственный сокет.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if isinstance(timeout, (int, float)):
+            sock.settimeout(timeout)
+        if device:
+            # bytes, не str: ядро ждёт имя устройства как есть.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, device.encode())
+        sock.connect((host, port))
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
+class _BoundHTTPConnection(http.client.HTTPConnection):
+    """HTTP без TLS, привязанный к устройству.
+
+    Нужен для reporter'а на портале: он слушает внутри служебного туннеля, и
+    TLS там был бы обрядом — попасть на этот адрес может только тот, у кого
+    уже есть ключ от туннеля.
+
+    Привязка обязательна и по другой причине, чем у Telegram. Адрес `wg1` на
+    бридже — это /32, маршрута на подсеть туннеля нет, и пакет к 10.77.77.1
+    уходит в основную таблицу через WAN и умирает там. Проверено на живом
+    узле. Альтернатива — добавить маршрут в шаблон wg1, но это перезапуск
+    интерфейса и окно обслуживания ради одного чтения метрик.
     """
 
     def __init__(self, host: str, device: str | None = None, **kwargs: Any) -> None:
@@ -61,16 +86,19 @@ class _BoundHTTPSConnection(http.client.HTTPSConnection):
         self._device = device
 
     def connect(self) -> None:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock = _bound_socket(self.host, self.port, self._device, self.timeout)
+
+
+class _BoundHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS-соединение, привязанное к сетевому устройству."""
+
+    def __init__(self, host: str, device: str | None = None, **kwargs: Any) -> None:
+        super().__init__(host, **kwargs)
+        self._device = device
+
+    def connect(self) -> None:
+        sock = _bound_socket(self.host, self.port, self._device, self.timeout)
         try:
-            if isinstance(self.timeout, (int, float)):
-                sock.settimeout(self.timeout)
-            if self._device:
-                # bytes, не str: ядро ждёт имя устройства как есть.
-                sock.setsockopt(
-                    socket.SOL_SOCKET, socket.SO_BINDTODEVICE, self._device.encode()
-                )
-            sock.connect((self.host, self.port))
             # server_hostname обязателен: на привязанном сокете имя хоста
             # ниоткуда больше не берётся, а без него TLS соединится и с чужим
             # сертификатом.
@@ -127,6 +155,45 @@ def post_json(
             device,
         ) from exc
 
+    if not isinstance(parsed, dict):
+        raise TransportError(f"ожидался объект JSON, пришло {type(parsed).__name__}", device)
+    return parsed
+
+
+def get_json(
+    host: str,
+    port: int,
+    path: str,
+    *,
+    device: str | None = None,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    """GET по обычному HTTP, ответ разбирается как JSON.
+
+    Отдельно от post_json, потому что адресат другой по существу: reporter на
+    портале внутри туннеля, без TLS и без токена. Смешивать их в одной функции
+    с флагом значило бы, что однажды запрос к Telegram уйдёт без шифрования.
+    """
+    conn = _BoundHTTPConnection(host, device=device, port=port, timeout=timeout)
+    try:
+        conn.request("GET", path)
+        response = conn.getresponse()
+        raw = response.read()
+        status = response.status
+    except OSError as exc:
+        raise TransportError(f"{type(exc).__name__}: {exc}", device) from exc
+    finally:
+        conn.close()
+
+    if status != 200:
+        raise TransportError(f"HTTP {status} от {host}:{port}{path}", device)
+
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        raise TransportError(
+            f"ответ не разобрался как JSON ({len(raw)} байт)", device
+        ) from exc
     if not isinstance(parsed, dict):
         raise TransportError(f"ожидался объект JSON, пришло {type(parsed).__name__}", device)
     return parsed

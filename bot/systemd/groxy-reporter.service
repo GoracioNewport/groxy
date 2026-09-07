@@ -1,0 +1,32 @@
+[Unit]
+Description=groxy — метрики портала для бриджа
+# Без адреса на туннельном интерфейсе привязаться не к чему, поэтому старт
+# после него. Requires= не ставим: перезапуск wg0 не должен уносить reporter
+# насовсем, Restart= поднимет его сам через несколько секунд.
+After=wg-quick@wg0.service
+
+[Service]
+Type=simple
+ExecStart=/opt/groxy/bot/bin/groxy-reporter
+Restart=always
+RestartSec=5s
+
+# Демон живёт под своим пользователем и ничего не запускает: ему нужно только
+# читать /proc и держать сокет. Здесь, в отличие от бриджа, sudo не нужен
+# вовсе — значит и NoNewPrivileges можно оставить включённым вместе со всей
+# остальной защитой.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_UNIX
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target
