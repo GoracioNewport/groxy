@@ -681,13 +681,13 @@ _bridge_stats_json() {
     local cfg_dir="${GROXY_DIR}/bridge"
 
     printf '{"generated_at":%d,"portal":' "${now}"
-    if [[ -n "${portal_name}" ]] && _bridge_json_safe_name "${portal_name}"; then
+    if [[ -n "${portal_name}" ]] && _json_safe_name "${portal_name}"; then
         printf '{"name":"%s","public_key":"%s","tunnel_address":%s,"endpoint":%s,"latest_handshake":%s,"rx":%s,"tx":%s}' \
-            "${portal_name}" "$(_bridge_json_key "${portal_pubkey}")" \
-            "$(_bridge_json_address "${tunnel_address}")" \
-            "$(_bridge_json_endpoint "${p_endpoint}")" \
-            "$(_bridge_json_num "${p_hs}")" \
-            "$(_bridge_json_num "${p_rx}")" "$(_bridge_json_num "${p_tx}")"
+            "${portal_name}" "$(_json_key "${portal_pubkey}")" \
+            "$(_json_address "${tunnel_address}")" \
+            "$(_json_endpoint "${p_endpoint}")" \
+            "$(_json_num "${p_hs}")" \
+            "$(_json_num "${p_rx}")" "$(_json_num "${p_tx}")"
     else
         printf 'null'
     fi
@@ -698,7 +698,7 @@ _bridge_stats_json() {
         [[ -e "${peer_file}" ]] || continue
         name=$(basename "${peer_file}" .peer)
         [[ -n "${only}" && "${name}" != "${only}" ]] && continue
-        if ! _bridge_json_safe_name "${name}"; then
+        if ! _json_safe_name "${name}"; then
             log "warning: skipping '${peer_file}' — name is not a valid peer name"
             continue
         fi
@@ -711,67 +711,12 @@ _bridge_stats_json() {
         IFS=$'\t' read -r endpoint hs rx tx < <(_bridge_peer_live "${dump0}" "${pubkey}")
         printf '%s{"name":"%s","address":"%s","public_key":"%s","endpoint":%s,"latest_handshake":%s,"rx":%s,"tx":%s}' \
             "${sep}" "${name}" "${addr}" "${pubkey}" \
-            "$(_bridge_json_endpoint "${endpoint}")" \
-            "$(_bridge_json_num "${hs}")" \
-            "$(_bridge_json_num "${rx}")" "$(_bridge_json_num "${tx}")"
+            "$(_json_endpoint "${endpoint}")" \
+            "$(_json_num "${hs}")" \
+            "$(_json_num "${rx}")" "$(_json_num "${tx}")"
         sep=','
     done
     printf ']}\n'
-}
-
-# Имя годится в JSON только если проходит ту же проверку, что и на входе.
-_bridge_json_safe_name() {
-    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]]
-}
-
-# Ключ печатается только если это настоящий ключ WireGuard, иначе пустая
-# строка. Молча подставить мусор в поле нельзя: бот сопоставляет по ключу.
-_bridge_json_key() {
-    [[ "$1" =~ ^[A-Za-z0-9+/]{43}=$ ]] && printf '%s' "$1"
-}
-
-# IPv4-адрес строкой либо null. Проверка формой, а не «непустое»: значение
-# уходит боту, который подставит его в сетевой запрос, и мусор оттуда лучше
-# превратить в отсутствие адреса, чем в попытку соединиться неизвестно с чем.
-_bridge_json_address() {
-    if [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
-        printf '"%s"' "$1"
-    else
-        printf 'null'
-    fi
-}
-
-# Числовое поле. Всё, что не число, становится нулём, а не голым словом:
-# незакавыченный мусор сделал бы невалидным весь ответ.
-_bridge_json_num() {
-    [[ "$1" =~ ^[0-9]+$ ]] && printf '%s' "$1" || printf '0'
-}
-
-# Endpoint печатается как строка либо как null.
-#
-# «Нет endpoint» приходит в двух видах, и оба обязаны стать null. `wg show
-# dump` пишет `(none)` у пира, который есть в ядре, но ни разу не подключался —
-# проверено на живом узле. Прочерк ставит уже _bridge_peer_live, когда пира в
-# дампе нет вовсе. Заставлять вызывающего знать про обе особенности вывода wg
-# незачем.
-#
-# Скобки в `(none)` и так не проходят класс символов ниже, то есть отсеклись бы
-# сами. Проверка всё равно названа явно: молчаливая правильность держится на
-# том, что кто-то не добавит скобки в класс ради очередного формата адреса.
-#
-# Порядок символов в классе не косметика. Скобки нужны ради IPv6 — wg пишет
-# его как `[2001:db8::1]:51820`, — но `]` закрывает класс везде, кроме первой
-# позиции, а `-` вне последней читается как диапазон. Написанный «читаемо»
-# класс `[A-Za-z0-9.:_\[\]-]` обрывался на `\]` и требовал от строки
-# литерального `-]`, из-за чего любой живой endpoint становился null, а бот
-# видел бы всех клиентов ни разу не подключавшимися.
-_bridge_json_endpoint() {
-    local ep="$1"
-    if [[ "${ep}" != '-' && "${ep}" != '(none)' && "${ep}" =~ ^[]A-Za-z0-9.:_[-]+$ ]]; then
-        printf '"%s"' "${ep}"
-    else
-        printf 'null'
-    fi
 }
 
 # То же самое для таблицы: `(none)` из вывода wg не должен просачиваться в

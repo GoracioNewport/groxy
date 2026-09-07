@@ -139,6 +139,26 @@ with tempfile.TemporaryDirectory() as tmp:
     wd.main()
     check("тревога поднята", 1, len(sent))
 
+    print("== бот ушёл на другой портал ==")
+    # Пинги прекратились не потому, что бот умер, а потому что он переключился.
+    # Reporter пишет сюда слово по просьбе бота ДО переключения.
+    state.write_text(json.dumps({"first_run": now - 10_000, "seen_ping": True}))
+    ping.write_text("standby\n")
+    sent.clear()
+    wd.main()
+    check("тревоги нет", [], sent)
+    saved = json.loads(state.read_text())
+    # Право судить сбрасывается: иначе после возврата на этот портал первая же
+    # проверка сравнивала бы с историей от прошлой жизни.
+    check("право судить сброшено", False, saved.get("seen_ping"))
+
+    print("== после ожидания портал снова становится активным ==")
+    ping.write_text(f"{now}\n")
+    sent.clear()
+    wd.main()
+    check("молчит: пинг свежий", [], sent)
+    check("право судить набрано заново", True, json.loads(state.read_text())["seen_ping"])
+
 print()
 print(f"прошло: {passed}, упало: {failed}")
 sys.exit(1 if failed else 0)

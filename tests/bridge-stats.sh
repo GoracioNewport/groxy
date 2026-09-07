@@ -23,7 +23,7 @@ PUBLIC_IP=203.0.113.1
 EOF
 
 # Ключи обязаны иметь настоящую форму: 43 символа base64 плюс '='. Иначе
-# _bridge_json_key печатает пустую строку, и проверка «ключ доехал до JSON»
+# _json_key печатает пустую строку, и проверка «ключ доехал до JSON»
 # прошла бы на любом мусоре.
 fake_key() { printf 'fakekey%036d=' "$1"; }
 
@@ -152,11 +152,11 @@ if (( have_python )); then
     # IPv6 wg пишет со скобками. Класс символов, пропускающий IPv4 и
     # спотыкающийся на скобках, отдал бы null и показал живого клиента
     # отключённым — проверяется отдельно именно поэтому.
-    check "endpoint в форме IPv6" ok "$(_bridge_json_endpoint '[2001:db8::1]:51820' | grep -c . | sed 's/^1$/ok/')"
+    check "endpoint в форме IPv6" ok "$(_json_endpoint '[2001:db8::1]:51820' | grep -c . | sed 's/^1$/ok/')"
     check "IPv6 не превратился в null" 0 \
-        "$(_bridge_json_endpoint '[2001:db8::1]:51820' | grep -c '^null$')"
+        "$(_json_endpoint '[2001:db8::1]:51820' | grep -c '^null$')"
     check "кавычка в endpoint отвергнута" 1 \
-        "$(_bridge_json_endpoint 'a"b' | grep -c '^null$')"
+        "$(_json_endpoint 'a"b' | grep -c '^null$')"
     check "handshake подключённого клиента" "${NOW_HS}" "$(jq_field clients 0 latest_handshake <<<"${out}")"
     # Клиента нет в дампе ядра — это не ошибка и не пропуск записи: профиль
     # существует, просто им ни разу не пользовались. Нули и null здесь

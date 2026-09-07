@@ -115,13 +115,32 @@ def write_state(state: dict) -> None:
         print(f"не удалось сохранить состояние: {exc}", file=sys.stderr)
 
 
-def last_ping_age(now: int) -> int | None:
-    """Возраст последней отметки в секундах. None — отметки нет вовсе."""
+STANDBY = "standby"
+
+
+def read_mark(now: int) -> tuple[int | None, bool]:
+    """Возраст последней отметки и признак «портал переведён в ожидание».
+
+    Три различимых состояния, и все три нужны:
+      возраст — бот пингует, всё в порядке;
+      None    — отметки нет вовсе или она нечитаема, судить не по чему;
+      standby — бот сам сказал, что уходит на другой портал.
+
+    Последнее пишет reporter по просьбе бота перед переключением. Без него
+    прежний активный портал через пятнадцать минут прислал бы «бот не
+    отвечает» — пинги к нему и правда прекратились, но бот жив и работает
+    через другой портал.
+    """
     try:
         raw = open(PING_PATH).read().strip()
-        return now - int(raw)
-    except (OSError, ValueError):
-        return None
+    except OSError:
+        return None, False
+    if raw == STANDBY:
+        return None, True
+    try:
+        return now - int(raw), False
+    except ValueError:
+        return None, False
 
 
 def main() -> int:
@@ -148,7 +167,20 @@ def main() -> int:
         started = now
         state["first_run"] = started
 
-    age = last_ping_age(now)
+    age, standby = read_mark(now)
+
+    if standby:
+        # Бот сам сказал, что ушёл на другой портал. Судить о нём отсюда
+        # больше нельзя, и накопленное право судить надо сбросить — иначе
+        # после возврата на этот портал первая же проверка сравнивала бы с
+        # чужой историей.
+        if state.get("seen_ping") or state.get("quiet"):
+            print("портал переведён в ожидание: бот ушёл на другой", file=sys.stderr)
+        state["seen_ping"] = False
+        state["quiet"] = False
+        write_state(state)
+        return 0
+
     quiet = age is None or age > SILENCE_SECONDS
     within_grace = now - started < GRACE_SECONDS
     was_quiet = bool(state.get("quiet"))

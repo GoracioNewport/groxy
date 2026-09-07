@@ -90,7 +90,7 @@ Usage: groxy bridge <subcommand> [args...]
 Subcommands:
   add-portal <portal-name> --profile=<file>         Импортировать portal profile.
   use-portal <portal-name>                          Переключить активный portal.
-  list-portals                                      Показать доступные portal'ы.
+  list-portals [--json]                             Показать доступные portal'ы.
   remove-portal <portal-name> [--yes]               Удалить portal profile.
 
   add-client <client-name> [--qr] [--json]          Создать WG-клиента, напечатать конфиг (+ QR в stderr).

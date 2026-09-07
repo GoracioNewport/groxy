@@ -74,6 +74,18 @@ class PortalLink:
 
 
 @dataclass(frozen=True)
+class PortalInfo:
+    """Зарегистрированный портал. Публичный адрес нужен для пробы, идущей
+    мимо туннеля: без неё падение туннеля неотличимо от падения узла."""
+
+    name: str
+    active: bool
+    endpoint: str | None
+    port: int
+    tunnel_portal_ip: str | None
+
+
+@dataclass(frozen=True)
 class Snapshot:
     generated_at: int
     portal: PortalLink | None
@@ -195,6 +207,28 @@ class Groxy:
         data = self._parse_json(self._run(["add-client", name, "--json"]), "add-client")
         config = base64.b64decode(data["config_b64"]).decode("utf-8")
         return data["address"], config
+
+    def list_portals(self) -> tuple["PortalInfo", ...]:
+        data = self._parse_json(self._run(["list-portals", "--json"]), "list-portals")
+        return tuple(
+            PortalInfo(
+                name=item["name"],
+                active=bool(item.get("active")),
+                endpoint=item.get("endpoint"),
+                port=int(item.get("port", 0)),
+                tunnel_portal_ip=item.get("tunnel_portal_ip"),
+            )
+            for item in data
+        )
+
+    def use_portal(self, name: str) -> None:
+        """Переключает активный портал.
+
+        Перезапускает `wg1`, то есть стоит всем клиентам нескольких секунд
+        зарубежного трафика. Команда идемпотентна: переключение на уже
+        активный портал — не ошибка и не действие.
+        """
+        self._run(["use-portal", name])
 
     def remove_client(self, name: str) -> None:
         self._run(["remove-client", name, "--yes"])

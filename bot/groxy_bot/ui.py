@@ -129,8 +129,45 @@ def main_menu() -> list[list[dict[str, str]]]:
         ],
         [
             {"text": "Тревоги", "callback_data": "alerts"},
-            {"text": "Добавить профиль", "callback_data": "add"},
+            {"text": "Порталы", "callback_data": "portals"},
         ],
+        [{"text": "Добавить профиль", "callback_data": "add"}],
+    ]
+
+
+def portals_text(portals: Sequence) -> str:
+    if not portals:
+        return "Порталов не зарегистрировано."
+    lines = ["Порталы:", ""]
+    for item in portals:
+        mark = "▶" if item.active else " "
+        lines.append(f"{mark} {item.name} — {item.endpoint or 'адрес неизвестен'}")
+    lines.append("")
+    # Цена названа до нажатия, а не после: переключение рвёт зарубежный трафик
+    # у всех, и человек должен знать это, глядя на кнопку.
+    lines.append(
+        "Переключение перезапускает туннель — все клиенты теряют зарубежный "
+        "трафик на несколько секунд."
+    )
+    return "\n".join(lines)
+
+
+def portals_keyboard(portals: Sequence) -> list[list[dict[str, str]]]:
+    rows: list[list[dict[str, str]]] = []
+    for index, item in enumerate(portals):
+        if item.active:
+            continue
+        rows.append(
+            [{"text": f"Перейти на {item.name}", "callback_data": f"portal:{index}"}]
+        )
+    rows.append([{"text": "← Назад", "callback_data": "menu"}])
+    return rows
+
+
+def portal_confirm_keyboard(index: int) -> list[list[dict[str, str]]]:
+    return [
+        [{"text": "Да, переключить", "callback_data": f"portal!:{index}"}],
+        [{"text": "Отмена", "callback_data": "portals"}],
     ]
 
 

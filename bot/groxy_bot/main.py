@@ -21,6 +21,7 @@ from . import (
     cli,
     config,
     delivery,
+    failover,
     metrics,
     net,
     portal,
@@ -69,11 +70,13 @@ class Bot:
         self._db = sqlite3.connect(str(cfg.db_path), isolation_level=None)
         self._db.row_factory = sqlite3.Row
         self._alerts = alerts.AlertState(self._db)
+        self._failover = failover.Failover(self._db, self._groxy, cfg.tunnel_device)
         self._last_alert_check = 0.0
         # Список профилей, показанный в последний раз этому чату. Кнопки несут
         # порядковый номер, а не имя: в callback_data 64 байта, а имя бывает
         # до 63 символов, и длинное просто не влезло бы вместе с действием.
         self._shown: dict[int, list[cli.Client]] = {}
+        self._portals: dict[int, list[cli.PortalInfo]] = {}
 
     # -- вход ---------------------------------------------------------------
 
@@ -167,6 +170,19 @@ class Bot:
         for text in problems + recovered:
             self._delivery.send(text)
 
+        # Переключение — после алертов, а не вместо: сообщение «портал не
+        # отвечает» и сообщение «переключился» отвечают на разные вопросы, и
+        # первое должно успеть уйти, даже если второе не состоится.
+        try:
+            message = self._failover.evaluate(snapshot, now)
+        except Exception:
+            # Ошибка в решении о переключении не должна уносить наблюдение:
+            # без алертов узел останется молча сломанным.
+            log.exception("проверка переключения портала сорвалась")
+            return
+        if message:
+            self._delivery.send(message)
+
     # -- разбор -------------------------------------------------------------
 
     def _dispatch(self, update: telegram.Update) -> None:
@@ -238,6 +254,12 @@ class Bot:
             self._show_summary(chat_id, update.message_id)
         elif action == "alerts":
             self._show_alerts(chat_id, update.message_id)
+        elif action == "portals":
+            self._show_portals(chat_id, update.message_id)
+        elif action == "portal":
+            self._ask_portal_confirm(chat_id, update.message_id, argument)
+        elif action == "portal!":
+            self._do_switch_portal(chat_id, argument)
         elif action == "add":
             self._pending[chat_id] = Pending("add")
             self._api.send(chat_id, "Пришлите имя профиля. Буквы, цифры, дефис, точка.")
@@ -337,6 +359,60 @@ class Bot:
             self._api.send(chat_id, text, keyboard=keyboard)
         else:
             self._api.edit(chat_id, message_id, text, keyboard=keyboard)
+
+    def _show_portals(self, chat_id: int, message_id: int | None) -> None:
+        portals = self._groxy.list_portals()
+        self._portals[chat_id] = list(portals)
+        text = ui.portals_text(portals)
+        keyboard = ui.portals_keyboard(portals)
+        if message_id is None:
+            self._api.send(chat_id, text, keyboard=keyboard)
+        else:
+            self._api.edit(chat_id, message_id, text, keyboard=keyboard)
+
+    def _portal_at(self, chat_id: int, argument: str):
+        try:
+            index = int(argument)
+        except ValueError:
+            return None
+        portals = self._portals.get(chat_id)
+        if not portals or index < 0 or index >= len(portals):
+            return None
+        return portals[index]
+
+    def _ask_portal_confirm(
+        self, chat_id: int, message_id: int | None, argument: str
+    ) -> None:
+        target = self._portal_at(chat_id, argument)
+        if target is None:
+            self._show_portals(chat_id, message_id)
+            return
+        text = (
+            f"Перейти на портал «{target.name}»?\n\n"
+            "Туннель перезапустится: все клиенты потеряют зарубежный трафик на "
+            "несколько секунд. Российские ресурсы это не затронет."
+        )
+        keyboard = ui.portal_confirm_keyboard(int(argument))
+        if message_id is None:
+            self._api.send(chat_id, text, keyboard=keyboard)
+        else:
+            self._api.edit(chat_id, message_id, text, keyboard=keyboard)
+
+    def _do_switch_portal(self, chat_id: int, argument: str) -> None:
+        target = self._portal_at(chat_id, argument)
+        if target is None:
+            self._show_portals(chat_id, None)
+            return
+        # Прежний портал предупреждаем, чтобы его watchdog не решил, что бот
+        # умер: пинги к нему прекратятся, а он об этом знать не обязан.
+        self._failover.announce_manual_switch(target.name)
+        self._groxy.use_portal(target.name)
+        self._api.send(
+            chat_id,
+            f"Активный портал теперь «{target.name}». Handshake сойдётся "
+            "примерно за полминуты.",
+        )
+        self._show_portals(chat_id, None)
 
     def _show_client(self, chat_id: int, message_id: int | None, argument: str) -> None:
         client = self._client_at(chat_id, argument)

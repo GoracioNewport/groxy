@@ -126,6 +126,19 @@ def read_interfaces() -> dict:
     return result
 
 
+def _write_mark(payload: str) -> bool:
+    try:
+        os.makedirs(os.path.dirname(PING_PATH), exist_ok=True)
+        tmp = PING_PATH + ".tmp"
+        with open(tmp, "w") as handle:
+            handle.write(payload)
+        os.replace(tmp, PING_PATH)
+        return True
+    except OSError as exc:
+        print(f"не удалось записать отметку: {exc}", file=sys.stderr)
+        return False
+
+
 def record_ping() -> bool:
     """Отмечает, что бот на связи. Возвращает, удалось ли записать.
 
@@ -133,16 +146,22 @@ def record_ping() -> bool:
     обрыва записи неотличим от нормального, а строка со временем позволяет
     watchdog'у понять, что он читает.
     """
-    try:
-        os.makedirs(os.path.dirname(PING_PATH), exist_ok=True)
-        tmp = PING_PATH + ".tmp"
-        with open(tmp, "w") as handle:
-            handle.write(f"{int(time.time())}\n")
-        os.replace(tmp, PING_PATH)
-        return True
-    except OSError as exc:
-        print(f"не удалось записать отметку пинга: {exc}", file=sys.stderr)
-        return False
+    return _write_mark(f"{int(time.time())}\n")
+
+
+def record_standby() -> bool:
+    """Отмечает, что бот больше не считает этот портал активным.
+
+    Зовётся ботом перед тем, как переключиться на другой портал. Без этого
+    watchdog здесь через пятнадцать минут прислал бы «бот не отвечает»: пинги
+    к нему и правда больше не ходят, но бот при этом совершенно жив.
+
+    Пишется слово, а не удаляется файл: отсутствие файла означает «пингов не
+    было никогда», и это другое состояние. Их надо различать, иначе после
+    переключения портал вернулся бы в положение «сужу впервые» и при
+    следующем переключении обратно повёл бы себя не так, как надо.
+    """
+    return _write_mark("standby\n")
 
 
 def collect() -> dict:
@@ -173,6 +192,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = self.path.rstrip("/")
         if path == "/ping":
             self._reply(json.dumps({"ok": record_ping()}).encode())
+            return
+        if path == "/standby":
+            self._reply(json.dumps({"ok": record_standby()}).encode())
             return
         if path not in ("", "/metrics"):
             self.send_error(404)
