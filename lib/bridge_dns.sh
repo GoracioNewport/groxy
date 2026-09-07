@@ -55,6 +55,15 @@ _bridge_dnsmasq_bound_to() {
 # and retrying once. Callers in init paths should call
 # `_bridge_wait_for_wg0_address` first so the interface is definitely up.
 _bridge_dnsmasq_restart_verify() {
+    # Предохранитель перед каждым перезапуском. Фид скачивается ежедневно и не
+    # аутентифицирован, а теперь он управляет ещё и выбором резолвера — битый
+    # конфиг положил бы DNS целиком, включая российские сайты, у всех клиентов.
+    # Проверка стоит копейки и ловит это до того, как демон уйдёт в down.
+    if ! dnsmasq --test -C "${GROXY_DNSMASQ_CONF}" >/dev/null 2>&1; then
+        dnsmasq --test -C "${GROXY_DNSMASQ_CONF}" 2>&1 | tail -5 >&2
+        die "${GROXY_DNSMASQ_CONF} не проходит проверку синтаксиса — перезапуск отменён"
+    fi
+
     local want_ip
     want_ip=$(_bridge_dns_wg0_ip) || {
         # Bridge isn't initialised — fall back to a plain restart.
@@ -81,17 +90,128 @@ _bridge_dnsmasq_restart_verify() {
 
 # Render /etc/dnsmasq.conf — single source-of-truth for the dnsmasq
 # instance groxy runs.
+# Российские зоны верхнего уровня. Их домены обязаны резолвиться локально
+# всегда, даже когда фида ещё нет.
+readonly BRIDGE_DNS_RU_ZONES='ru su xn--p1ai moscow tatar'
+
+# Резолверы. Cloudflare уводится в туннель host-маршрутами (см. PostUp wg1),
+# Google остаётся на прямом пути — отсюда и разделение географии.
+readonly BRIDGE_DNS_FOREIGN='1.1.1.1 1.0.0.1'
+readonly BRIDGE_DNS_LOCAL='8.8.8.8 8.8.4.4'
+
+# Извлечь домен из строки списка. Пустая строка означает «здесь домена нет»:
+# комментарий, пустая строка или мусор.
+#
+# Правила намеренно повторяют _bridge_dns_emit_ipset_directives: множество
+# доменов, попадающих в server=, обязано совпадать с множеством, попадающим в
+# ipset=, иначе часть carve-out'а поедет резолвиться не с той стороны.
+_bridge_dns_domain_from_line() {
+    local line="$1" domain
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "${line}" ]]     && return 0
+    [[ "${line}" == \#* ]] && return 0
+    if [[ "${line}" == ipset=* ]]; then
+        domain="${line#ipset=/}"
+        domain="${domain%%/*}"
+    else
+        domain="${line#\*.}"
+    fi
+    # В фиде встречаются строки вида «домен:443» — порт отсекаем.
+    domain="${domain%%:*}"
+    [[ -z "${domain}" ]] && return 0
+    [[ "${domain}" == *[[:space:]]* ]] && return 0
+    printf '%s\n' "${domain}"
+}
+
+# Свернуть не-российские домены whitelist'а до регистрируемых суффиксов.
+#
+# Зачем сворачивать: в фиде около 3200 доменов вне российских зон, и выписывать
+# server= на каждый значило бы утроить конфиг. Суффиксов из них получается
+# около 120, и покрытие при этом полное — проверено на живом фиде.
+_bridge_dns_ru_suffixes() {
+    local src line domain
+    local ru_re='\.('"${BRIDGE_DNS_RU_ZONES// /|}"')$'
+    # Публичные суффиксы второго уровня: под ними регистрируют на третьем, и
+    # свёртка до двух меток захватила бы чужую зону целиком.
+    local multi='com\.ua|co\.uk|com\.tr|co\.il|com\.br|com\.au|com\.cn|co\.jp|com\.tw|com\.hk|com\.sg|co\.kr|com\.mx|com\.ar|co\.nz|com\.pl|com\.ge|com\.am|co\.za|org\.uk|net\.ua|org\.ua|com\.cy|com\.mt'
+
+    for src in "${GROXY_DIR}/bridge/whitelist/opencck.txt" \
+               "${GROXY_DIR}/bridge/whitelist/custom.txt"; do
+        [[ -f "${src}" ]] || continue
+        while IFS= read -r line || [[ -n "${line}" ]]; do
+            domain=$(_bridge_dns_domain_from_line "${line}")
+            [[ -n "${domain}" ]] || continue
+            [[ "${domain}" =~ ${ru_re} ]] && continue
+            printf '%s\n' "${domain}"
+        done < "${src}"
+    done | awk -v multi="${multi}" '
+        {
+            n = split($0, p, ".")
+            if (n < 2) next
+            two = p[n-1] "." p[n]
+            if (two ~ "^(" multi ")$" && n >= 3)
+                print p[n-2] "." two
+            else
+                print two
+        }' | grep -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' \
+           | sort -u
+}
+
+# Render /etc/dnsmasq.conf.
+#
+# Разделение резолверов по географии — вот ради чего эта функция стала
+# нетривиальной. dnsmasq стоит на бридже в России, а зарубежный трафик выходит
+# из Нидерландов; CDN выбирает узел выдачи по расположению резолвера, и Akamai
+# отдавал Steam узел в 138 мс от портала вместо 4 мс. Разбор и замеры — в
+# docs/DIAG-SLOW-STEAM.md и docs/DNS-BASELINE.md.
+#
+# Поэтому: всё по умолчанию идёт на Cloudflare, который host-маршрутами уведён
+# в туннель и потому отвечает «из Нидерландов», а российские зоны и российские
+# сервисы в чужих зонах пиннятся на Google по прямому пути и отвечают «из
+# России». Обратное разделение сломало бы российские CDN.
 bridge_render_dnsmasq_conf() {
-    write_atomic /etc/dnsmasq.conf 644 <<'EOF'
-# Managed by groxy. Do not edit by hand.
+    local suffixes zone resolver
+    suffixes=$(_bridge_dns_ru_suffixes)
+
+    if [[ -z "${suffixes}" ]]; then
+        log "warning: whitelist feed empty or missing — only the Russian TLDs" \
+            "will resolve locally; Russian services in .com/.net will not"
+    fi
+
+    {
+        cat <<EOF
+# Managed by groxy ${GROXY_VERSION}. Do not edit by hand.
 interface=wg0
 bind-dynamic
 no-resolv
-server=1.1.1.1
-server=8.8.8.8
 cache-size=10000
+# Короткий минимум TTL: ответы CDN живут секунды, и без него кэш почти не
+# работает, а каждый промах теперь стоит плечо до портала.
+min-cache-ttl=20
 conf-dir=/etc/dnsmasq.d/,*.conf
+
+# Зарубежные домены — через резолвер, уведённый в туннель.
 EOF
+        for resolver in ${BRIDGE_DNS_FOREIGN}; do
+            printf 'server=%s\n' "${resolver}"
+        done
+
+        printf '\n# Российские зоны — прямым путём, чтобы CDN видел российский резолвер.\n'
+        for zone in ${BRIDGE_DNS_RU_ZONES}; do
+            for resolver in ${BRIDGE_DNS_LOCAL}; do
+                printf 'server=/%s/%s\n' "${zone}" "${resolver}"
+            done
+        done
+
+        if [[ -n "${suffixes}" ]]; then
+            printf '\n# Российские сервисы в чужих зонах — тоже прямым путём.\n'
+            while IFS= read -r zone; do
+                for resolver in ${BRIDGE_DNS_LOCAL}; do
+                    printf 'server=/%s/%s\n' "${zone}" "${resolver}"
+                done
+            done <<<"${suffixes}"
+        fi
+    } | write_atomic "${GROXY_DNSMASQ_CONF}" 644
 }
 
 # Ensure the whitelist directory exists. Seeds custom.txt with the default
@@ -231,6 +351,7 @@ bridge_init_dns() {
 # 00-opencck.conf from their sources, restart dnsmasq.
 bridge_whitelist_reload() {
     require_root
+    acquire_state_lock
     local dir="${GROXY_DIR}/bridge/whitelist"
     [[ -d "${dir}" ]] || die "whitelist not initialised — run 'groxy init bridge' first"
     log "applying settings (respects opencck/custom/geoip toggles)"
@@ -241,6 +362,7 @@ bridge_whitelist_reload() {
 # source URL. Doesn't fetch — call `whitelist update` to refresh.
 bridge_whitelist_set_source() {
     require_root
+    acquire_state_lock
     local arg url=''
     for arg in "$@"; do
         case "${arg}" in
@@ -277,8 +399,64 @@ bridge_whitelist_set_source() {
 # whose cache-clear forces clients to re-resolve and repopulate.
 #
 # Treats fetch failures as soft: keeps previous list intact, logs warning.
+# Сколько разбираемых доменов в файле фида.
+#
+# Считаются именно домены, а не строки. Разница решающая: сервер, отдавший
+# страницу с ошибкой вместо списка, возвращает сотни строк и ноль доменов —
+# прежняя проверка «файл непустой» такое пропускала, и в конфиг dnsmasq
+# уезжал пустой список, то есть весь зарубежный трафик разом переставал
+# распознаваться.
+_bridge_dns_count_domains() {
+    local file="$1" line count=0
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        [[ -n "$(_bridge_dns_domain_from_line "${line}")" ]] && count=$((count + 1))
+    done < "${file}"
+    printf '%d\n' "${count}"
+}
+
+# Абсолютный пол: живой фид отдаёт тысячи доменов, сотня — уже явно не он.
+readonly BRIDGE_WHITELIST_MIN_DOMAINS="${BRIDGE_WHITELIST_MIN_DOMAINS:-100}"
+
+# Насколько список вправе усохнуть за одно обновление. Фид меняется понемногу;
+# падение вдвое означает, что отдали не то, а не что интернет уполовинился.
+readonly BRIDGE_WHITELIST_MIN_RATIO="${BRIDGE_WHITELIST_MIN_RATIO:-50}"
+
+# Годится ли скачанный файл на замену действующему.
+#
+# Отказ здесь — не поломка: прежний список остаётся на месте и продолжает
+# работать. Поэтому все ветки возвращают 1 и пишут в лог, а не зовут die:
+# упасть посреди ежедневного таймера значило бы оставить узел без обновлений
+# и без объяснений.
+_bridge_whitelist_feed_ok() {
+    local candidate="$1" current="$2"
+    local got want
+
+    got=$(_bridge_dns_count_domains "${candidate}")
+    if (( got < BRIDGE_WHITELIST_MIN_DOMAINS )); then
+        log "warning: fetched list has ${got} usable domain(s), need at least" \
+            "${BRIDGE_WHITELIST_MIN_DOMAINS} — keeping previous"
+        return 1
+    fi
+
+    if [[ -f "${current}" ]]; then
+        want=$(_bridge_dns_count_domains "${current}")
+        if (( want > 0 && got * 100 < want * BRIDGE_WHITELIST_MIN_RATIO )); then
+            log "warning: fetched list shrank from ${want} to ${got} domain(s)," \
+                "more than allowed — keeping previous"
+            return 1
+        fi
+    fi
+
+    log "fetched list has ${got} usable domain(s)"
+    return 0
+}
+
 bridge_whitelist_update() {
     require_root
+    # Запускается ежедневно по таймеру, то есть может совпасть с чем угодно.
+    # Перестраивает ru_cidrs через общий временный набор, и одновременный
+    # `groxy apply` получал ошибку на его удалении.
+    acquire_state_lock
     local dir="${GROXY_DIR}/bridge/whitelist"
     [[ -d "${dir}" ]] || die "whitelist not initialised — run 'groxy init bridge' first"
 
@@ -311,9 +489,10 @@ bridge_whitelist_update() {
         return 0
     fi
 
-    local lines
-    lines=$(wc -l < "${tmp}")
-    log "fetched ${lines} lines"
+    if ! _bridge_whitelist_feed_ok "${tmp}" "${dir}/opencck.txt"; then
+        rm -f "${tmp}"
+        return 0
+    fi
 
     chmod 600 "${tmp}"
     mv -f "${tmp}" "${dir}/opencck.txt"

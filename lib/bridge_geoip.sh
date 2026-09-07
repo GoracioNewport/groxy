@@ -66,6 +66,7 @@ bridge_populate_ru_cidrs() {
 # `groxy bridge geoip set-source <url>` — persist a new CIDR list URL.
 bridge_geoip_set_source() {
     require_root
+    acquire_state_lock
     local arg url=''
     for arg in "$@"; do
         case "${arg}" in
@@ -89,6 +90,8 @@ bridge_geoip_set_source() {
 # Treats fetch failures as soft: keeps previous list intact.
 bridge_geoip_update() {
     require_root
+    # Тоже по таймеру и тоже через общий временный ipset.
+    acquire_state_lock
     local dir="${GROXY_DIR}/bridge/whitelist"
     [[ -d "${dir}" ]] || die "bridge whitelist not initialised — run 'groxy init bridge' first"
 

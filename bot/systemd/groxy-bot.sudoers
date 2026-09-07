@@ -1,0 +1,35 @@
+# Что боту разрешено вызывать от root. Кладётся в /etc/sudoers.d/groxy-bot
+# с правами 440, проверяется через `visudo -c -f`.
+#
+# Бот работает под своим пользователем, а groxy требует root: файлы пиров лежат
+# с правами 600, а `wg show` без root ничего не покажет. Раздавать боту root
+# целиком незачем — он разбирает данные из сети.
+#
+# Перечислены подкоманды, а не `bridge *`: под звёздочку попал бы и
+# `whitelist set-source`, то есть смена источника списка доменов — а это
+# решение о том, какой трафик куда идёт, и боту оно не нужно.
+#
+# Аргументы всё равно остаются под звёздочкой: имена клиентов произвольны.
+# Их проверяет сам groxy — validate_peer_name отвергает всё, кроме
+# [A-Za-z0-9._-], так что через имя ничего не подставить.
+
+Cmnd_Alias GROXY_BOT_READ = \
+    /opt/groxy/groxy bridge stats, \
+    /opt/groxy/groxy bridge stats *, \
+    /opt/groxy/groxy bridge list-clients --json, \
+    /opt/groxy/groxy bridge list-portals --json
+
+Cmnd_Alias GROXY_BOT_WRITE = \
+    /opt/groxy/groxy bridge add-client *, \
+    /opt/groxy/groxy bridge remove-client *, \
+    /opt/groxy/groxy bridge rename-client *
+
+# Переключение портала выдано отдельным списком, потому что это единственное
+# право бота, задевающее сразу всех: команда перезапускает wg1, и все клиенты
+# теряют зарубежный трафик на несколько секунд. До Фазы 2 его здесь намеренно
+# не было. Теперь оно нужно — автопереключение без него невозможно, — но
+# отделено, чтобы отзыв был одной строкой, а не разбором общего списка.
+Cmnd_Alias GROXY_BOT_FAILOVER = \
+    /opt/groxy/groxy bridge use-portal *
+
+groxy-bot ALL=(root) NOPASSWD: GROXY_BOT_READ, GROXY_BOT_WRITE, GROXY_BOT_FAILOVER

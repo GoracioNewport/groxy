@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""Отдаёт метрики портала боту. Слушает только на туннельном адресе.
+
+Один самодостаточный файл, ничего не импортирующий из groxy_bot. Это
+намеренно: на порталах живёт роль portal, весь groxy там на bash, и ради
+метрик тащить туда пакет, юнит установки и следом заботу о том, чтобы он не
+разъехался с бриджем, — дороже, чем повторить сорок строк чтения /proc.
+Разворачивается копированием одного файла.
+
+Слушает на адресе портала внутри служебного туннеля. Снаружи недоступен вовсе,
+поэтому ни токенов, ни подписи здесь нет: попасть на этот адрес может только
+тот, у кого уже есть ключ от туннеля.
+
+Счётчики интерфейсов отдаются сырыми, накопленными с момента загрузки.
+Скорость считает бридж по разности двух опросов — у него уже есть история и
+свои минутные отметки времени, а у портала нет ни того, ни другого.
+"""
+
+from __future__ import annotations
+
+import http.server
+import json
+import os
+import socket
+import sys
+import time
+
+LISTEN_PORT = int(os.environ.get("GROXY_REPORTER_PORT", "9101"))
+
+# Отметка последнего пинга от бота. Её читает watchdog: если бот замолчал,
+# сообщить об этом больше некому — он и есть единственный канал наружу с
+# бриджа. Каталог задаётся юнитом через StateDirectory, поэтому переживает
+# перезагрузку: отметка из прошлой жизни честно означает «с тех пор не
+# приходило», а не «всё в порядке, просто /run почистили».
+PING_PATH = os.environ.get(
+    "GROXY_REPORTER_PING", "/var/lib/groxy-reporter/last-ping"
+)
+# Адрес портала внутри служебного туннеля. Значение по умолчанию совпадает с
+# TUNNEL_PORTAL_IP из portal.env — привязка к нему и есть та самая
+# недоступность снаружи.
+LISTEN_ADDRESS = os.environ.get("GROXY_REPORTER_ADDRESS", "10.77.77.1")
+
+PROC = "/proc"
+
+
+def read_load() -> dict:
+    try:
+        parts = open(f"{PROC}/loadavg").read().split()
+        return {"load1": float(parts[0]), "load5": float(parts[1])}
+    except (OSError, ValueError, IndexError):
+        return {"load1": None, "load5": None}
+
+
+def read_memory() -> dict:
+    values = {}
+    try:
+        for line in open(f"{PROC}/meminfo"):
+            key, _, rest = line.partition(":")
+            if key in ("MemTotal", "MemAvailable"):
+                try:
+                    values[key] = int(rest.split()[0]) * 1024
+                except (ValueError, IndexError):
+                    pass
+    except OSError:
+        return {"mem_used": None, "mem_total": None}
+    total = values.get("MemTotal")
+    available = values.get("MemAvailable")
+    if total is None or available is None:
+        return {"mem_used": None, "mem_total": total}
+    # Занято = total − available, а не total − free: MemFree на узле с
+    # работающим кэшем вечно выглядит как «память кончается».
+    return {"mem_used": total - available, "mem_total": total}
+
+
+def read_disk(path: str = "/") -> dict:
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return {"disk_used": None, "disk_total": None}
+    total = st.f_blocks * st.f_frsize
+    # Свободное берётся как f_bavail, доступное непривилегированному: часть
+    # раздела зарезервирована под root, и мерить по ней значило бы уверять,
+    # что место есть, когда обычный процесс уже не пишет.
+    free = st.f_bavail * st.f_frsize
+    return {"disk_used": total - free, "disk_total": total}
+
+
+def read_conntrack() -> dict:
+    """Занятость таблицы соединений.
+
+    Через портал идёт весь зарубежный трафик парка, и упереться в потолок
+    conntrack тут реальнее, чем в процессор: на nether ядро вывело из 960 МБ
+    памяти значение 8192, которого хватало ровно до первого оживления.
+    """
+    out = {"conntrack_count": None, "conntrack_max": None}
+    for key, path in (
+        ("conntrack_count", "/proc/sys/net/netfilter/nf_conntrack_count"),
+        ("conntrack_max", "/proc/sys/net/netfilter/nf_conntrack_max"),
+    ):
+        try:
+            out[key] = int(open(path).read().strip())
+        except (OSError, ValueError):
+            pass
+    return out
+
+
+def read_interfaces() -> dict:
+    """Сырые счётчики байт по интерфейсам."""
+    result: dict[str, dict[str, int]] = {}
+    try:
+        lines = open(f"{PROC}/net/dev").read().splitlines()[2:]
+    except OSError:
+        return result
+    for line in lines:
+        name, _, rest = line.partition(":")
+        name = name.strip()
+        if name == "lo":
+            continue
+        fields = rest.split()
+        if len(fields) < 10:
+            continue
+        try:
+            result[name] = {"rx": int(fields[0]), "tx": int(fields[8])}
+        except ValueError:
+            continue
+    return result
+
+
+def _write_mark(payload: str) -> bool:
+    try:
+        os.makedirs(os.path.dirname(PING_PATH), exist_ok=True)
+        tmp = PING_PATH + ".tmp"
+        with open(tmp, "w") as handle:
+            handle.write(payload)
+        os.replace(tmp, PING_PATH)
+        return True
+    except OSError as exc:
+        print(f"не удалось записать отметку: {exc}", file=sys.stderr)
+        return False
+
+
+def record_ping() -> bool:
+    """Отмечает, что бот на связи. Возвращает, удалось ли записать.
+
+    Пишется содержимое, а не просто трогается mtime: файл нулевой длины после
+    обрыва записи неотличим от нормального, а строка со временем позволяет
+    watchdog'у понять, что он читает.
+    """
+    return _write_mark(f"{int(time.time())}\n")
+
+
+def record_standby() -> bool:
+    """Отмечает, что бот больше не считает этот портал активным.
+
+    Зовётся ботом перед тем, как переключиться на другой портал. Без этого
+    watchdog здесь через пятнадцать минут прислал бы «бот не отвечает»: пинги
+    к нему и правда больше не ходят, но бот при этом совершенно жив.
+
+    Пишется слово, а не удаляется файл: отсутствие файла означает «пингов не
+    было никогда», и это другое состояние. Их надо различать, иначе после
+    переключения портал вернулся бы в положение «сужу впервые» и при
+    следующем переключении обратно повёл бы себя не так, как надо.
+    """
+    return _write_mark("standby\n")
+
+
+def collect() -> dict:
+    data = {
+        "at": int(time.time()),
+        "hostname": socket.gethostname(),
+        "cpu_count": os.cpu_count() or 1,
+        "interfaces": read_interfaces(),
+    }
+    data.update(read_load())
+    data.update(read_memory())
+    data.update(read_disk())
+    data.update(read_conntrack())
+    try:
+        data["uptime"] = int(float(open(f"{PROC}/uptime").read().split()[0]))
+    except (OSError, ValueError, IndexError):
+        data["uptime"] = None
+    return data
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    # Строка сервера по умолчанию называет версию Python. Внутри туннеля это
+    # не опасно, но и сообщать нечего.
+    server_version = "groxy-reporter"
+    sys_version = ""
+
+    def do_GET(self) -> None:  # noqa: N802 — имя задано базовым классом
+        path = self.path.rstrip("/")
+        if path == "/ping":
+            self._reply(json.dumps({"ok": record_ping()}).encode())
+            return
+        if path == "/standby":
+            self._reply(json.dumps({"ok": record_standby()}).encode())
+            return
+        if path not in ("", "/metrics"):
+            self.send_error(404)
+            return
+        body = json.dumps(collect()).encode()
+        self._reply(body)
+
+    def _reply(self, body: bytes) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt: str, *args) -> None:
+        # По запросу в минуту от одного клиента журнал не нужен: он забил бы
+        # собой всё, что действительно стоит читать.
+        pass
+
+
+def main() -> int:
+    try:
+        server = http.server.ThreadingHTTPServer((LISTEN_ADDRESS, LISTEN_PORT), Handler)
+    except OSError as exc:
+        # Чаще всего это значит, что туннель ещё не поднят и адреса на
+        # интерфейсе нет. Юнит перезапустит через несколько секунд.
+        print(
+            f"не удалось занять {LISTEN_ADDRESS}:{LISTEN_PORT}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"слушаю {LISTEN_ADDRESS}:{LISTEN_PORT}", file=sys.stderr)
+    server.serve_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

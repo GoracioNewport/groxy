@@ -16,6 +16,7 @@
 # the bridge's pubkey for use in 'portal accept-bridge' on the new portal.
 bridge_add_portal() {
     require_root
+    acquire_state_lock
     local arg name='' profile=''
     for arg in "$@"; do
         case "${arg}" in
@@ -72,12 +73,25 @@ EOF
 # `groxy bridge list-portals`.
 bridge_list_portals() {
     require_root
+    local arg want_json=0
+    for arg in "$@"; do
+        case "${arg}" in
+            --json) want_json=1 ;;
+            *) die "bridge list-portals: unknown argument '${arg}'" ;;
+        esac
+    done
+
     local cfg_dir="${GROXY_DIR}/bridge"
     [[ -d "${cfg_dir}/portals" ]] \
         || die "bridge not initialised — run 'groxy init bridge --portal-profile=...' first"
 
     local current=''
     [[ -f "${cfg_dir}/current-portal" ]] && current=$(<"${cfg_dir}/current-portal")
+
+    if (( want_json )); then
+        _bridge_list_portals_json "${cfg_dir}" "${current}"
+        return 0
+    fi
 
     printf '%-3s %-20s %-25s %s\n' '' 'NAME' 'ENDPOINT' 'BRIDGE_IP'
     local portal_path name PORTAL_NAME PORTAL_ENDPOINT PORTAL_PORT PORTAL_PUBKEY
@@ -97,11 +111,56 @@ bridge_list_portals() {
     done
 }
 
+# JSON-ветка list-portals. Отдаёт то, что нужно автопереключению: имена,
+# какой сейчас активен, публичный адрес каждого и его адрес внутри туннеля.
+#
+# Публичный адрес нужен для пробы, независимой от туннеля. Без неё падение
+# туннеля неотличимо от падения узла, и переключаться пришлось бы вслепую —
+# в том числе на портал, который сам лежит.
+#
+# Поля проверяются перед печатью, как и везде: portal.env приходит из профиля,
+# который человек копировал руками, и одна кавычка в нём ломала бы разбор
+# всего ответа, а не своей записи.
+_bridge_list_portals_json() {
+    local cfg_dir="$1" current="$2"
+    local portal_path name sep=''
+    local PORTAL_NAME PORTAL_ENDPOINT PORTAL_PORT PORTAL_PUBKEY
+    local PSK TUNNEL_SUBNET TUNNEL_PORTAL_IP TUNNEL_BRIDGE_IP
+
+    printf '['
+    for portal_path in "${cfg_dir}"/portals/*/; do
+        [[ -e "${portal_path}/portal.env" ]] || continue
+        name=$(basename "${portal_path}")
+        if [[ ! "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]]; then
+            log "warning: skipping portal dir '${name}' — not a valid name"
+            continue
+        fi
+        PORTAL_NAME=''; PORTAL_ENDPOINT=''; PORTAL_PORT=''
+        PORTAL_PUBKEY=''; PSK=''; TUNNEL_SUBNET=''
+        TUNNEL_PORTAL_IP=''; TUNNEL_BRIDGE_IP=''
+        # shellcheck source=/dev/null
+        source "${portal_path}/portal.env"
+
+        printf '%s{"name":"%s","active":%s,"endpoint":%s,"port":%s,"tunnel_portal_ip":%s,"tunnel_bridge_ip":%s}' \
+            "${sep}" "${name}" \
+            "$( [[ "${name}" == "${current}" ]] && printf 'true' || printf 'false' )" \
+            "$(_json_address "${PORTAL_ENDPOINT}")" \
+            "$(_json_num "${PORTAL_PORT}")" \
+            "$(_json_address "${TUNNEL_PORTAL_IP}")" \
+            "$(_json_address "${TUNNEL_BRIDGE_IP}")"
+        sep=','
+    done
+    printf ']\n'
+}
+
 # `groxy bridge use-portal <name>`. Switches active portal: updates
 # current-portal, re-renders wg1.conf, restarts wg-quick@wg1. Clients on
 # wg0 are unaffected (their tunnel terminates at wg0, not wg1).
 bridge_use_portal() {
     require_root
+    # Held for the whole switch: the failover monitor calls this on its own
+    # schedule, so it can collide with a hand-run command at any moment.
+    acquire_state_lock
     local arg name=''
     for arg in "$@"; do
         case "${arg}" in
@@ -141,6 +200,7 @@ bridge_use_portal() {
 # currently-active portal — call 'use-portal' first to switch.
 bridge_remove_portal() {
     require_root
+    acquire_state_lock
     local arg name=''
     for arg in "$@"; do
         case "${arg}" in

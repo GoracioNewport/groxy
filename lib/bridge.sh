@@ -74,7 +74,7 @@ bridge_render_wg1_conf() {
     local private_key
     private_key=$(<"${cfg_dir}/private.key")
 
-    write_atomic /etc/wireguard/wg1.conf 600 <<EOF
+    write_atomic "${GROXY_RENDER_DIR:-${GROXY_WG_DIR}}/wg1.conf" 600 <<EOF
 # Managed by groxy ${GROXY_VERSION}. Do not edit by hand —
 # changes will be overwritten on next 'groxy apply'.
 # Active portal: ${portal_name}
@@ -93,6 +93,29 @@ PostUp = iptables -A FORWARD -i wg0 -o %i -j ACCEPT
 PostUp = iptables -A FORWARD -i %i -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
 PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE
 
+# Резолверы для зарубежных доменов уводятся в туннель host-маршрутами.
+#
+# Это и есть починка географии: dnsmasq спрашивает Cloudflare, запрос уходит
+# через портал, и CDN видит нидерландскую подсеть вместо московской. Без этих
+# трёх строк Akamai отдавал Steam узел в 138 мс от портала вместо 4 мс —
+# замеры в docs/DNS-BASELINE.md.
+#
+# 9.9.9.9 никем не используется и служит пробой: он идёт через туннель ВСЕГДА,
+# независимо от состояния двух маршрутов выше, поэтому по нему можно проверить
+# живость плеча, не завися от того, что проверяешь.
+#
+# Именно replace, а не add: маршруты могли быть поставлены руками при выкате,
+# и add на существующий вернул бы «File exists». wg-quick выполняет PostUp с
+# прерыванием на первой ошибке, так что интерфейс просто не поднялся бы, и все
+# 36 клиентов остались бы без зарубежного трафика.
+#
+# Обратных кавычек в этом блоке быть не должно: heredoc здесь незакавыченный,
+# он подставляет переменные — и содержимое кавычек оболочка выполнит как
+# команду прямо при рендере.
+PostUp = ip route replace 1.1.1.1/32 dev %i src ${TUNNEL_BRIDGE_IP}
+PostUp = ip route replace 1.0.0.1/32 dev %i src ${TUNNEL_BRIDGE_IP}
+PostUp = ip route replace 9.9.9.9/32 dev %i src ${TUNNEL_BRIDGE_IP}
+
 PostDown = ip rule del fwmark 0x1 lookup vpn2 priority 100 2>/dev/null || true
 PostDown = ip route del default dev %i table vpn2 2>/dev/null || true
 PostDown = iptables -t mangle -D PREROUTING -i wg0 -j MARK --set-mark 0x1 2>/dev/null || true
@@ -101,6 +124,9 @@ PostDown = iptables -t mangle -D PREROUTING -i wg0 -m set --match-set ru_cidrs d
 PostDown = iptables -D FORWARD -i wg0 -o %i -j ACCEPT 2>/dev/null || true
 PostDown = iptables -D FORWARD -i %i -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
 PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE 2>/dev/null || true
+PostDown = ip route del 1.1.1.1/32 dev %i 2>/dev/null || true
+PostDown = ip route del 1.0.0.1/32 dev %i 2>/dev/null || true
+PostDown = ip route del 9.9.9.9/32 dev %i 2>/dev/null || true
 
 [Peer]
 PublicKey = ${PORTAL_PUBKEY}
@@ -117,6 +143,7 @@ EOF
 # Idempotent.
 bridge_init() {
     require_root
+    acquire_state_lock
     _bridge_parse_init_flags "$@"
     require_supported_os
 
@@ -170,6 +197,7 @@ EOF
 
     log "enabling IPv4 forwarding"
     sysctl_set net.ipv4.ip_forward 1
+    ensure_conntrack_capacity
 
     log "rendering /etc/wireguard/wg1.conf (full mangle)"
     bridge_render_wg1_conf
@@ -201,13 +229,37 @@ EOF
 
 # `groxy apply` for the bridge role — re-render all configs and reconcile
 # services with the current /etc/groxy/bridge/ state. Idempotent.
+# True when the running wg0 already carries the address the config asks for.
+# Returns false when the interface is down, which correctly routes a first
+# start through wg_quick_enable_restart rather than through a peer sync.
+_bridge_wg0_address_matches() {
+    systemctl is-active --quiet wg-quick@wg0 || return 1
+
+    local cfg_dir="${GROXY_DIR}/bridge/wg0"
+    local SUBNET='' LISTEN_PORT='' PUBLIC_IP=''
+    # shellcheck source=/dev/null
+    source "${cfg_dir}/server.env"
+    [[ -n "${SUBNET}" ]] || return 1
+
+    local want current
+    want="$(_bridge_wg0_server_ip "${SUBNET}")/${SUBNET#*/}"
+    current=$(ip -brief -4 addr show wg0 2>/dev/null | awk '{print $3}')
+    [[ "${current}" == "${want}" ]]
+}
+
 bridge_apply() {
     require_root
+    # apply re-renders the same wg0.conf that add-client writes into. Without
+    # the lock it could render from a half-written clients directory while a
+    # bot was mid-add, publishing a config missing the peer that was just
+    # promised to a user.
+    acquire_state_lock
     [[ -f "${GROXY_DIR}/bridge/current-portal" ]] \
         || die "bridge not initialised — run 'groxy init bridge --portal-profile=...' first"
 
     log "ensuring IPv4 forwarding"
     sysctl_set net.ipv4.ip_forward 1
+    ensure_conntrack_capacity
 
     log "ensuring routing table + ipset definitions"
     bridge_ensure_rt_table
@@ -219,10 +271,32 @@ bridge_apply() {
     log "rendering /etc/wireguard/wg0.conf"
     bridge_render_wg0_conf
 
+    # wg1 carries one peer and its PostUp owns the policy-routing rules, so a
+    # restart there is cheap and sometimes necessary.
     log "restarting wg-quick@wg1"
     wg_quick_enable_restart wg1
-    log "restarting wg-quick@wg0"
-    wg_quick_enable_restart wg0
+
+    # wg0 carries 36 client sessions. Restarting it re-handshakes every one and
+    # resets the kernel's per-peer counters — the same counters the bot reports
+    # traffic from. So restart only when something syncconf cannot apply.
+    #
+    # syncconf applies the interface keys and the peers. It does not set the
+    # interface address, and it does not run PostUp — so the firewall rules
+    # have to be reconciled explicitly here, or apply would report success
+    # while leaving the MSS clamp and the carve-out MASQUERADE uninstalled.
+    local SUBNET=''
+    # shellcheck source=/dev/null
+    source "${GROXY_DIR}/bridge/wg0/server.env"
+    log "ensuring wg0 firewall rules"
+    bridge_ensure_wg0_rules "${SUBNET}"
+
+    if _bridge_wg0_address_matches; then
+        log "syncing wg0 peers (address unchanged, sessions preserved)"
+        wg_sync_peers wg0
+    else
+        log "restarting wg-quick@wg0 (interface address changed — clients will re-handshake)"
+        wg_quick_enable_restart wg0
+    fi
 
     log "reconciling dnsmasq + whitelist feeds with current settings"
     bridge_apply_settings

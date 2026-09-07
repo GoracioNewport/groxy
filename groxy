@@ -43,6 +43,8 @@ source "${LIB_DIR}/bridge_portals.sh"
 source "${LIB_DIR}/status.sh"
 # shellcheck source=lib/uninstall.sh
 source "${LIB_DIR}/uninstall.sh"
+# shellcheck source=lib/backup.sh
+source "${LIB_DIR}/backup.sh"
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -56,8 +58,12 @@ Usage: groxy <command> [args...]
 
 Commands:
   init <portal|bridge> [flags]   Первичная установка роли.
-  apply                          Перегенерировать конфиги из /etc/groxy/.
+  apply [--dry-run]              Перегенерировать конфиги из /etc/groxy/.
+                                 --dry-run: показать разницу и ничего не менять.
+                                 Код 10 — изменения есть.
   status                         Показать роль, сервисы, peer'ы.
+  backup [--keep=<n>]            Снять архив состояния и проверить распаковкой.
+  backup list                    Показать снятые архивы.
   uninstall [--yes]              Снести установку (бэкап в /etc/groxy.bak.<ts>).
 
   portal <subcommand>            Управление peer'ами portal'а.
@@ -76,7 +82,8 @@ usage_portal() {
 Usage: groxy portal <subcommand> [args...]
 
 Subcommands:
-  add-bridge <bridge-name>                          Создать peer и напечатать portal profile.
+  add-peer <name> [--role=bridge|system]            Создать peer и напечатать portal profile.
+  add-bridge <name>                                 Псевдоним add-peer с --role=bridge.
   accept-bridge <bridge-name> --pubkey=<key>        Активировать peer по pubkey'ю bridge'а.
   remove-bridge <bridge-name> [--yes]               Удалить peer.
   list-bridges                                      Показать зарегистрированные bridge'и.
@@ -90,12 +97,18 @@ Usage: groxy bridge <subcommand> [args...]
 Subcommands:
   add-portal <portal-name> --profile=<file>         Импортировать portal profile.
   use-portal <portal-name>                          Переключить активный portal.
-  list-portals                                      Показать доступные portal'ы.
+  list-portals [--json]                             Показать доступные portal'ы.
   remove-portal <portal-name> [--yes]               Удалить portal profile.
 
-  add-client <client-name> [--qr]                   Создать WG-клиента, напечатать конфиг (+ QR в stderr).
-  remove-client <client-name> [--yes]               Удалить клиента.
-  list-clients                                      Показать клиентов.
+  add-client <client-name> [--qr] [--json]          Создать WG-клиента, напечатать конфиг (+ QR в stderr).
+                                                    --json: конфиг в поле config_b64.
+                                                    Коды: 10 — имя занято, 11 — занята блокировка.
+  remove-client <client-name> [--yes]               Удалить клиента. Отсутствующий — не ошибка.
+  rename-client <old-name> <new-name>               Переименовать. Клиент не переподключается.
+                                                    Код 10 — новое имя занято.
+  list-clients [--json]                             Показать клиентов.
+  stats [<client-name>] [--json]                    Живое состояние: handshake, счётчики,
+                                                    endpoint, плюс туннель до портала.
 
   whitelist <update|reload|set-source>              Управление whitelist'ом доменов.
   geoip <update|set-source>                         Управление GeoIP-карв-аутом (ipset ru_cidrs).
@@ -177,6 +190,14 @@ cmd_init() {
 }
 
 cmd_apply() {
+    local arg
+    for arg in "$@"; do
+        case "${arg}" in
+            --dry-run) groxy_apply_dry_run; return $? ;;
+            *) die "apply: unknown argument '${arg}'" ;;
+        esac
+    done
+
     local role=''
     [[ -f "${GROXY_DIR}/role" ]] && role=$(<"${GROXY_DIR}/role")
     case "${role}" in
@@ -191,6 +212,15 @@ cmd_status() {
     cmd_status_real "$@"
 }
 
+# Бэкап состояния: снять архив или посмотреть, что уже снято.
+cmd_backup() {
+    local sub="${1:-}"
+    case "${sub}" in
+        list) shift; groxy_backup_list "$@" ;;
+        *)    groxy_backup "$@" ;;
+    esac
+}
+
 cmd_uninstall() {
     cmd_uninstall_real "$@"
 }
@@ -203,7 +233,9 @@ cmd_portal() {
     local sub="${1:-}"
     shift || true
     case "${sub}" in
-        add-bridge)      portal_add_bridge "$@" ;;
+        # add-peer — основное имя, add-bridge остаётся псевдонимом: команда
+        # звалась так с самого начала и стоит в инструкциях.
+        add-peer|add-bridge) portal_add_bridge "$@" ;;
         accept-bridge)   portal_accept_bridge "$@" ;;
         remove-bridge)   portal_remove_bridge "$@" ;;
         list-bridges)    portal_list_bridges "$@" ;;
@@ -233,7 +265,9 @@ cmd_bridge() {
         remove-portal)   bridge_remove_portal "$@" ;;
         add-client)      bridge_add_client "$@" ;;
         remove-client)   bridge_remove_client "$@" ;;
+        rename-client)   bridge_rename_client "$@" ;;
         list-clients)    bridge_list_clients "$@" ;;
+        stats)           bridge_stats "$@" ;;
         whitelist)       cmd_bridge_whitelist "$@" ;;
         geoip)           cmd_bridge_geoip "$@" ;;
         settings)        cmd_bridge_settings "$@" ;;
@@ -312,6 +346,7 @@ main() {
         init)        cmd_init "$@" ;;
         apply)       cmd_apply "$@" ;;
         status)      cmd_status "$@" ;;
+        backup)      cmd_backup "$@" ;;
         uninstall)   cmd_uninstall "$@" ;;
         portal)      cmd_portal "$@" ;;
         bridge)      cmd_bridge "$@" ;;
