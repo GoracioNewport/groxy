@@ -1,0 +1,31 @@
+[Unit]
+Description=groxy — проверка, что бот на бридже жив
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/groxy/bot/bin/groxy-watchdog
+
+# Своего пользователя, а не DynamicUser: watchdog читает токен из
+# /etc/groxy/bot и должен делать это по постоянному имени, иначе права на файл
+# пришлось бы раздавать всем.
+User=groxy-watchdog
+Group=groxy-watchdog
+StateDirectory=groxy-watchdog
+
+# Токена и списка допущенных ему хватает на чтение; отметку пинга пишет
+# reporter, watchdog её только читает. Ничего исполнять он не запускает,
+# поэтому вся защита остаётся включённой — в отличие от бриджа, где sudo
+# заставил выключить NoNewPrivileges.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_UNIX
+MemoryMax=64M

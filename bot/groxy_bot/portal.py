@@ -66,6 +66,25 @@ def active_portal_address() -> tuple[str, str] | None:
     return name, address
 
 
+def ping(address: str, device: str, timeout: float = 5.0) -> bool:
+    """Отмечается на портале как живой.
+
+    Это половина watchdog'а: портал ждёт отметку и кричит в Telegram, если она
+    перестала приходить. Бот сам о своей смерти сообщить не может — он и есть
+    единственный канал наружу с бриджа.
+
+    Неудача не поднимается наверх: пинг — побочная обязанность, и ронять из-за
+    него чтение метрик значило бы, что упавший watchdog уносит с собой ещё и
+    наблюдение за порталом.
+    """
+    try:
+        net.get_json(address, REPORTER_PORT, "/ping", device=device, timeout=timeout)
+        return True
+    except net.TransportError as exc:
+        log.info("пинг до портала не прошёл: %s", exc)
+        return False
+
+
 def fetch(device: str, timeout: float = 8.0) -> PortalMetrics | None:
     """Метрики активного портала, или None, если не ответил.
 
@@ -94,6 +113,8 @@ def fetch(device: str, timeout: float = 8.0) -> PortalMetrics | None:
     def num(key: str):
         value = data.get(key)
         return value if isinstance(value, (int, float)) else None
+
+    ping(address, device)
 
     return PortalMetrics(
         name=name,

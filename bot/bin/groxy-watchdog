@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Кричит в Telegram, когда бот на бридже замолчал.
+
+Закрывает единственную дыру, которую бот закрыть не может: он и есть
+единственный канал наружу с бриджа, и о собственной смерти сообщить некому.
+Портал же видит Telegram напрямую — фильтр стоит у провайдера бриджа, не здесь.
+
+Устройство простое до предела. Reporter отмечает каждый пинг от бота в файл;
+watchdog раз в несколько минут смотрит на возраст отметки. Молчит дольше
+порога — одно сообщение. Заговорил снова — одно сообщение о возвращении.
+
+Отдельный файл, ничего не импортирующий: на портале нет ни пакета groxy_bot,
+ни причин его туда тащить.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import socket
+import ssl
+import sys
+import time
+
+CONFIG_DIR = os.environ.get("GROXY_BOT_DIR", "/etc/groxy/bot")
+PING_PATH = os.environ.get("GROXY_REPORTER_PING", "/var/lib/groxy-reporter/last-ping")
+STATE_PATH = os.environ.get(
+    "GROXY_WATCHDOG_STATE", "/var/lib/groxy-watchdog/state.json"
+)
+
+# Сколько молчания считать поломкой. Бот пингует раз в минуту, так что
+# пятнадцать минут — это пятнадцать пропущенных подряд, а не сетевая икота.
+SILENCE_SECONDS = int(os.environ.get("GROXY_WATCHDOG_SILENCE", "900"))
+
+# Отсрочка после собственного старта. После перезагрузки портала бот ещё не
+# успел прислать ни одного пинга, и без отсрочки watchdog кричал бы о поломке
+# при каждом подъёме узла.
+GRACE_SECONDS = int(os.environ.get("GROXY_WATCHDOG_GRACE", "900"))
+
+API_HOST = "api.telegram.org"
+_TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
+
+
+def read_token() -> str | None:
+    """Токен или None, если файла ещё нет.
+
+    Отсутствие токена — не ошибка запуска, а ожидаемое состояние: владелец
+    кладёт его руками, и юнит стоит включить заранее, чтобы он заработал сам,
+    как только файл появится. Падать каждые пять минут до этого момента значит
+    забить журнал и научить не смотреть в него.
+    """
+    try:
+        raw = open(os.path.join(CONFIG_DIR, "token")).read().strip()
+    except OSError:
+        return None
+    if not _TOKEN_RE.match(raw):
+        raise SystemExit(f"токен в {CONFIG_DIR}/token не похож на токен BotFather")
+    return raw
+
+
+def read_chat_ids() -> list[int]:
+    try:
+        lines = open(os.path.join(CONFIG_DIR, "allowed-chat-ids")).read().splitlines()
+    except OSError:
+        return []
+    ids = []
+    for line in lines:
+        stripped = line.split("#", 1)[0].strip()
+        if stripped:
+            ids.append(int(stripped))
+    return ids
+
+
+def send(token: str, chat_id: int, text: str) -> bool:
+    """Отправка напрямую. Портал видит Telegram без туннеля."""
+    body = json.dumps({"chat_id": chat_id, "text": text}).encode()
+    context = ssl.create_default_context()
+    try:
+        with socket.create_connection((API_HOST, 443), timeout=20) as raw:
+            with context.wrap_socket(raw, server_hostname=API_HOST) as sock:
+                request = (
+                    f"POST /bot{token}/sendMessage HTTP/1.1\r\n"
+                    f"Host: {API_HOST}\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    "Connection: close\r\n\r\n"
+                ).encode() + body
+                sock.sendall(request)
+                first = sock.recv(64).split(b"\r\n")[0]
+        return b"200" in first
+    except OSError as exc:
+        # Текст ошибки печатается без запроса: в нём был бы токен.
+        print(f"отправка не удалась: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return False
+
+
+def read_state() -> dict:
+    try:
+        with open(STATE_PATH) as handle:
+            state = json.load(handle)
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_state(state: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+        tmp = STATE_PATH + ".tmp"
+        with open(tmp, "w") as handle:
+            json.dump(state, handle)
+        os.replace(tmp, STATE_PATH)
+    except OSError as exc:
+        print(f"не удалось сохранить состояние: {exc}", file=sys.stderr)
+
+
+def last_ping_age(now: int) -> int | None:
+    """Возраст последней отметки в секундах. None — отметки нет вовсе."""
+    try:
+        raw = open(PING_PATH).read().strip()
+        return now - int(raw)
+    except (OSError, ValueError):
+        return None
+
+
+def main() -> int:
+    now = int(time.time())
+    state = read_state()
+    token = read_token()
+    chat_ids = read_chat_ids()
+
+    if token is None or not chat_ids:
+        # Ждём, пока владелец положит токен и список. Одна строка в журнал,
+        # код возврата ноль: юнит не должен выглядеть сломанным, пока он
+        # просто не настроен.
+        print(
+            f"не настроен: нет токена или списка допущенных в {CONFIG_DIR}",
+            file=sys.stderr,
+        )
+        return 0
+
+    # Отсрочка отсчитывается от первого запуска, а не от загрузки узла: юнит
+    # могли поставить только что, и тогда отсутствие отметки — это «ещё не
+    # начиналось», а не «сломалось».
+    started = state.get("first_run")
+    if not isinstance(started, int):
+        started = now
+        state["first_run"] = started
+
+    age = last_ping_age(now)
+    quiet = age is None or age > SILENCE_SECONDS
+    within_grace = now - started < GRACE_SECONDS
+
+    was_quiet = bool(state.get("quiet"))
+
+    if quiet and within_grace and age is None:
+        # Отметки нет, и мы только что начали. Молчим: бот ещё не успел
+        # прислать первый пинг.
+        write_state(state)
+        return 0
+
+    hostname = socket.gethostname()
+    if quiet and not was_quiet:
+        detail = "ни одного пинга" if age is None else f"молчит {age // 60} мин"
+        text = (
+            f"🚨 Бот на бридже не отвечает: {detail}.\n\n"
+            f"Сообщает watchdog с портала {hostname}. Похоже, лёг сам бридж "
+            f"или бот на нём — иначе это сообщение прислал бы он."
+        )
+        for chat_id in chat_ids:
+            send(token, chat_id, text)
+        state["quiet"] = True
+    elif not quiet and was_quiet:
+        text = (
+            f"✅ Бот на бридже снова на связи (пинг {age} с назад).\n\n"
+            f"Сообщает watchdog с портала {hostname}."
+        )
+        for chat_id in chat_ids:
+            send(token, chat_id, text)
+        state["quiet"] = False
+
+    write_state(state)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

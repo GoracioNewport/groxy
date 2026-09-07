@@ -11,11 +11,25 @@ ExecStart=/opt/groxy/bot/bin/groxy-reporter
 Restart=always
 RestartSec=5s
 
-# Демон живёт под своим пользователем и ничего не запускает: ему нужно только
-# читать /proc и держать сокет. Здесь, в отличие от бриджа, sudo не нужен
-# вовсе — значит и NoNewPrivileges можно оставить включённым вместе со всей
-# остальной защитой.
-DynamicUser=yes
+# Постоянный пользователь, а не DynamicUser. Соблазн был: демону не нужно
+# ничего, кроме чтения /proc и сокета. Но при DynamicUser systemd кладёт
+# StateDirectory в /var/lib/private, а он 0700 root:root — и watchdog, который
+# работает под своим пользователем, не смог бы прочитать отметку пинга.
+# Не увидев ни одной отметки, он после отсрочки закричал бы о смерти бота и
+# кричал бы дальше при совершенно живом боте. Проверено на sweden.
+User=groxy-reporter
+Group=groxy-reporter
+
+# Отметка последнего пинга от бота — её читает watchdog. Каталог именно
+# StateDirectory, а не RuntimeDirectory: /run чистится при перезагрузке, и
+# отметка исчезала бы вместе с ней, превращая «бот молчит со вчера» в «всё в
+# порядке, просто данных нет».
+StateDirectory=groxy-reporter
+StateDirectoryMode=0755
+
+# Демон ничего не запускает: ему нужно только читать /proc и держать сокет.
+# Здесь, в отличие от бриджа, sudo не нужен вовсе — значит и NoNewPrivileges
+# остаётся включённым вместе со всей остальной защитой.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=true
