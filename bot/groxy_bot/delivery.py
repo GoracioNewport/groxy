@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 
 from . import net, telegram
@@ -32,17 +33,32 @@ class Delivery:
     # отправке, а это фон, а не сигнал.
     _last_path: str | None = None
 
-    def send(self, text: str) -> bool:
-        """Отправляет всем допущенным. True, если хоть кому-то дошло."""
-        delivered = False
-        for chat_id in sorted(self.chat_ids):
-            if self._send_one(chat_id, text):
-                delivered = True
-        if not delivered:
-            # Единственный случай, когда сказать некому. Пишем в журнал —
-            # его прочитают, когда придут разбираться, почему тихо.
-            log.error("алерт не доставлен ни одним путём: %s", text)
-        return delivered
+    def send(self, text: str, attempts: int = 3, pause: float = 15.0) -> bool:
+        """Отправляет всем допущенным. True, если хоть кому-то дошло.
+
+        Повторяет несколько раз с паузой, потому что самое важное сообщение —
+        «переключился на резервный портал» — рождается сразу после
+        перезапуска туннеля, когда handshake ещё не сошёлся. Первая попытка
+        там обречена, а второй шанс сообщению никто не даст: состояние
+        переключения уже изменилось, и текст не повторится.
+
+        Пауза блокирует цикл бота, и это допустимо: опрашивание и так стоит
+        тридцать секунд, а сообщений такого класса — единицы в месяц.
+        """
+        for attempt in range(1, attempts + 1):
+            delivered = False
+            for chat_id in sorted(self.chat_ids):
+                if self._send_one(chat_id, text):
+                    delivered = True
+            if delivered:
+                return True
+            if attempt < attempts:
+                log.info("попытка %d не прошла, повтор через %.0f с", attempt, pause)
+                time.sleep(pause)
+        # Единственный случай, когда сказать некому. Пишем в журнал — его
+        # прочитают, когда придут разбираться, почему тихо.
+        log.error("сообщение не доставлено ни одним путём: %s", text)
+        return False
 
     def _send_one(self, chat_id: int, text: str) -> bool:
         # Кортеж, а не словарь: порядок здесь и есть смысл.

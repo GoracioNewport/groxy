@@ -236,7 +236,31 @@ check("сообщено о смене пути", True, any("сменился" in
 print("== не доставлено ни одним путём ==")
 api = FakeApi(working_device="ничего")
 d = Delivery(api=api, tunnel_device="wg1", chat_ids=frozenset({1}))
-check("честно возвращает False", False, d.send("тревога"))
+check("честно возвращает False", False, d.send("тревога", attempts=1))
+
+print("== повтор дожидается, пока туннель поднимется ==")
+# Самое важное сообщение — «переключился на резервный портал» — рождается
+# сразу после перезапуска туннеля, когда handshake ещё не сошёлся. Первая
+# попытка там обречена, а второго шанса сообщению никто не даст: состояние
+# переключения уже изменилось, и текст не повторится.
+
+
+class LateApi(FakeApi):
+    def __init__(self):
+        super().__init__(working_device="wg1")
+        self.calls = 0
+
+    def send_via(self, chat_id, text, device):
+        self.calls += 1
+        if self.calls <= 2:
+            raise net.TransportError("timed out", device)
+        super().send_via(chat_id, text, device)
+
+
+api = LateApi()
+d = Delivery(api=api, tunnel_device="wg1", chat_ids=frozenset({1}))
+check("со второй попытки дошло", True, d.send("переключился", attempts=3, pause=0))
+check("сообщение отправлено ровно раз", 1, len(api.sent))
 
 print("== отказ Telegram тоже роняет ступень, а не доставку ==")
 

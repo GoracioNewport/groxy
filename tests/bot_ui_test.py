@@ -284,6 +284,39 @@ check(
     any("один раз" in t for _, t in bot._api.sent),
 )
 
+print("== проверка идёт, даже когда опрашивание отваливается ==")
+# Опрашивание Telegram ходит через тот же портал, который проверка стережёт.
+# Пока она стояла внутри try вокруг poll(), при падении портала она была
+# недостижима ровно тогда, когда нужна: боевая проверка 07.09 показала, что
+# бот две минуты писал в журнал таймауты и ни разу не подумал переключиться.
+bot = make_bot()
+checked = []
+bot._check_alerts = lambda: checked.append(1)
+bot._api.poll = lambda: (_ for _ in ()).throw(
+    net_module.TransportError("timed out", "wg1")
+)
+bot._api.drop_pending = lambda: None
+bot._api.get_me = lambda: "test_bot"
+
+
+def _stop_after_two():
+    if len(checked) >= 2:
+        raise KeyboardInterrupt
+    return 0.0
+
+
+import time as _time  # noqa: E402
+
+_real_sleep = _time.sleep
+_time.sleep = lambda _s: _stop_after_two()
+try:
+    bot.run()
+except KeyboardInterrupt:
+    pass
+finally:
+    _time.sleep = _real_sleep
+check("проверка вызвана, хотя опрашивание падало", True, len(checked) >= 2)
+
 print()
 print(f"прошло: {passed}, упало: {failed}")
 sys.exit(1 if failed else 0)
