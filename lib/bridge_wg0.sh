@@ -423,3 +423,345 @@ bridge_remove_client() {
     bridge_render_wg0_conf
     wg_sync_peers wg0
 }
+
+# `groxy bridge rename-client <old> <new>`. Renames the peer file and
+# re-renders. The client keeps working across the rename: WireGuard keys a peer
+# by its public key, and that does not change here — only the name we file it
+# under and the comment in wg0.conf.
+#
+# Идемпотентность устроена так же, как у remove-client, и по той же причине:
+# бот теряет ответ по таймауту и повторяет команду. Если старого имени уже нет,
+# а новое есть — переименование прошло в прошлый раз, это успех, а не ошибка.
+# Отличить этот случай от «оба отсутствуют» обязательно: второе означает, что
+# бот просит переименовать то, чего нет, и молчаливый успех скрыл бы опечатку.
+bridge_rename_client() {
+    require_root
+    local arg old='' new=''
+    for arg in "$@"; do
+        case "${arg}" in
+            --*) die "bridge rename-client: unknown flag '${arg}'" ;;
+            *)
+                if [[ -z "${old}" ]]; then
+                    old="${arg}"
+                elif [[ -z "${new}" ]]; then
+                    new="${arg}"
+                else
+                    die "bridge rename-client: extra argument '${arg}'"
+                fi
+                ;;
+        esac
+    done
+    [[ -n "${old}" && -n "${new}" ]] \
+        || die "usage: groxy bridge rename-client <old-name> <new-name>"
+    validate_peer_name "${old}"
+    validate_peer_name "${new}"
+    acquire_state_lock
+
+    local cfg_dir="${GROXY_DIR}/bridge/wg0"
+    [[ -f "${cfg_dir}/server.env" ]] \
+        || die "bridge not initialised — run 'groxy init bridge --portal-profile=...' first"
+
+    # Одно и то же имя — успех без единого действия. Проверяется до всего
+    # остального, иначе ветка «новое имя занято» отвергла бы переименование
+    # клиента в самого себя отдельным кодом, и повтор команды выглядел бы
+    # конфликтом.
+    if [[ "${old}" == "${new}" ]]; then
+        log "client '${old}' already has this name"
+        return 0
+    fi
+
+    local old_file="${cfg_dir}/clients/${old}.peer"
+    local new_file="${cfg_dir}/clients/${new}.peer"
+
+    if [[ ! -e "${old_file}" ]]; then
+        [[ -e "${new_file}" ]] \
+            && { log "client already renamed to '${new}'"; return 0; }
+        die "client '${old}' not found"
+    fi
+
+    # Занятое имя получает свой код по той же причине, что и в add-client:
+    # вызывающий должен отличать конфликт имён от поломки, чтобы решить, можно
+    # ли повторять. Перезапись здесь была бы худшим из вариантов — она стёрла
+    # бы чужого живого клиента вместе с его ключом.
+    [[ -e "${new_file}" ]] && die_code "${GROXY_EXIT_EXISTS}" \
+        "client '${new}' already exists"
+
+    mv "${old_file}" "${new_file}" \
+        || die "failed to rename '${old}' to '${new}'"
+    log "renamed client '${old}' to '${new}'"
+
+    # Комментарий внутри файла пира — единственное место, где старое имя ещё
+    # осталось. Он ничего не решает: рендер берёт имя из имени файла. Но файл
+    # читают глазами при разборе поломок, и «client "alpha"» в файле beta.peer
+    # отправляет разбор по ложному следу.
+    #
+    # Правится через временный файл, а не sed -i: sed -i создаёт новый файл с
+    # правами по umask, и приватные поля пира на мгновение оказались бы
+    # читаемыми всем.
+    #
+    # Обратно кладётся через write_atomic, а не редиректом. `cat tmp > file`
+    # усекает файл ДО того, как начнёт писать: обрыв в этом окне — кончился
+    # диск, убили процесс, узел перезагрузился — оставляет пустой .peer, а
+    # приватного ключа клиента нет нигде, он отдавался один раз. И ломается не
+    # один клиент: рендер на файле без PUBLIC_KEY отказывается работать
+    # целиком, то есть add-client и remove-client перестают работать у всех,
+    # пока файл не починят руками.
+    #
+    # Временный файл снимается через trap, а не строкой ниже: при отказе
+    # write_atomic `set -e` завершает процесс, и файл с PSK пира остался бы
+    # лежать в /tmp.
+    local tmp
+    tmp=$(mktemp) || die "cannot create a temporary file while renaming"
+    chmod 600 "${tmp}"
+    # shellcheck disable=SC2064  # путь подставляется сейчас, и это намеренно
+    trap "rm -f '${tmp}'" RETURN
+    if sed "1s/^# client \"${old}\"/# client \"${new}\"/" "${new_file}" > "${tmp}"; then
+        write_atomic "${new_file}" 600 < "${tmp}"
+    else
+        log "warning: could not update the name comment inside ${new_file}"
+    fi
+
+    # Ядро при переименовании не меняется — пир опознаётся по публичному ключу.
+    # Синхронизация всё равно вызывается, чтобы не заводить второй порядок
+    # действий: «отрендерить и синхронизировать» должно означать одно и то же
+    # после любой изменяющей команды.
+    bridge_render_wg0_conf
+    wg_sync_peers wg0
+}
+
+# Печатает строки пиров из `wg show <iface> dump`, без первой строки — она
+# описывает сам интерфейс и содержит приватный ключ. Отбрасывается по номеру
+# строки, а не по числу полей: у строки интерфейса их четыре, у пира восемь,
+# но полагаться на это значит сломаться на первом же изменении формата.
+#
+# `|| true` обязателен. На неподнятом интерфейсе `wg show` возвращает 1,
+# `pipefail` протаскивает это через конвейер, и присваивание
+# `dump=$(_bridge_wg_dump_peers wg1)` под `set -e` завершает весь процесс. Со
+# скрытым stderr вызывающий получал бы пустой вывод и код 1 — неотличимо от
+# «groxy сломан». А случай самый обычный: туннель до портала лёг, идёт
+# переключение через `use-portal`, или бридж только что развёрнут и wg1 ещё не
+# поднят. Наблюдение обязано пережить именно это, а не только хорошую погоду.
+_bridge_wg_dump_peers() {
+    local iface="$1"
+    wg show "${iface}" dump 2>/dev/null | awk 'NR > 1' || true
+}
+
+# Из выданного дампа достаёт строку одного пира и печатает четыре поля через
+# табуляцию: endpoint, эпоха последнего handshake, принято, отдано.
+# Ничего не найдено — печатает прочерк и три нуля, чтобы у вызывающего всегда
+# было одинаковое число полей.
+_bridge_peer_live() {
+    local dump="$1" pubkey="$2"
+    awk -v k="${pubkey}" -F'\t' '
+        $1 == k { printf "%s\t%s\t%s\t%s\n", $3, $5, $6, $7; found = 1; exit }
+        END { if (!found) printf "%s\t0\t0\t0\n", "-" }
+    ' <<<"${dump}"
+}
+
+# Человекочитаемый объём. Байты как есть до килобайта, дальше с одним знаком.
+_bridge_fmt_bytes() {
+    local b="${1:-0}"
+    [[ "${b}" =~ ^[0-9]+$ ]] || { printf '?'; return; }
+    if   (( b < 1024 ));              then printf '%d B' "${b}"
+    elif (( b < 1048576 ));           then awk -v b="${b}" 'BEGIN{printf "%.1f KiB", b/1024}'
+    elif (( b < 1073741824 ));        then awk -v b="${b}" 'BEGIN{printf "%.1f MiB", b/1048576}'
+    else                                   awk -v b="${b}" 'BEGIN{printf "%.1f GiB", b/1073741824}'
+    fi
+}
+
+# `groxy bridge stats [<client-name>] [--json]`.
+#
+# Отдаёт живое состояние: по каждому клиенту — адрес, возраст handshake,
+# счётчики и endpoint, плюс отдельным блоком туннель до активного портала.
+# Это то, из чего бот собирает и список профилей, и минутный снимок, и поводы
+# для алертов, поэтому источник один и разбирать `wg show` в двух местах не
+# приходится.
+#
+# Блокировку намеренно НЕ берёт. Команда только читает, а снимок снимается раз
+# в минуту: заставь её ждать общей блокировки — и один долгий `whitelist
+# update` останавливал бы наблюдение ровно тогда, когда на узле что-то
+# происходит. Цена — снимок может застать состояние в середине чужой правки,
+# и это честнее, чем дыра в истории.
+#
+# Эпохи handshake отдаются сырыми, без «5 минут назад»: возраст зависит от
+# момента чтения, и вычислять его должен тот, кто показывает, а не тот, кто
+# снимает. Ноль означает «никогда».
+bridge_stats() {
+    require_root
+    local arg want_json=0 only=''
+    for arg in "$@"; do
+        case "${arg}" in
+            --json) want_json=1 ;;
+            --*) die "bridge stats: unknown flag '${arg}'" ;;
+            *)
+                [[ -z "${only}" ]] || die "bridge stats: extra argument '${arg}'"
+                only="${arg}"
+                ;;
+        esac
+    done
+    [[ -n "${only}" ]] && validate_peer_name "${only}"
+
+    local cfg_dir="${GROXY_DIR}/bridge"
+    [[ -d "${cfg_dir}/wg0/clients" ]] \
+        || die "bridge not initialised — run 'groxy init bridge --portal-profile=...' first"
+
+    local now dump0 dump1
+    now=$(date +%s)
+    dump0=$(_bridge_wg_dump_peers wg0)
+    dump1=$(_bridge_wg_dump_peers wg1)
+
+    # Контекст активного портала. Локали объявлены до source: portal.env —
+    # это state-файл, и без объявления его поля разошлись бы по окружению
+    # функции. PSK в списке обязателен наравне с остальными — иначе
+    # преобщий ключ туннеля до портала остаётся жить в глобальной переменной
+    # процесса и всплывает в первом же `set -x`.
+    local portal_name='' PORTAL_ENDPOINT='' PORTAL_PORT='' PORTAL_PUBKEY=''
+    local TUNNEL_PORTAL_IP='' TUNNEL_BRIDGE_IP='' PORTAL_NAME='' TUNNEL_SUBNET=''
+    local PSK=''
+    if [[ -f "${cfg_dir}/current-portal" ]]; then
+        portal_name=$(<"${cfg_dir}/current-portal")
+        if [[ -f "${cfg_dir}/portals/${portal_name}/portal.env" ]]; then
+            # shellcheck source=/dev/null
+            source "${cfg_dir}/portals/${portal_name}/portal.env"
+        fi
+    fi
+
+    local p_endpoint='-' p_hs=0 p_rx=0 p_tx=0
+    if [[ -n "${PORTAL_PUBKEY}" ]]; then
+        IFS=$'\t' read -r p_endpoint p_hs p_rx p_tx \
+            < <(_bridge_peer_live "${dump1}" "${PORTAL_PUBKEY}")
+    fi
+
+    if (( want_json )); then
+        _bridge_stats_json "${now}" "${portal_name}" "${PORTAL_PUBKEY}" \
+            "${p_endpoint}" "${p_hs}" "${p_rx}" "${p_tx}" "${dump0}" "${only}"
+        return 0
+    fi
+
+    printf 'portal %s — handshake %s, %s принято, %s отдано\n\n' \
+        "${portal_name:-?}" "$(_status_fmt_age "${p_hs}")" \
+        "$(_bridge_fmt_bytes "${p_rx}")" "$(_bridge_fmt_bytes "${p_tx}")"
+
+    printf '%-20s %-14s %-12s %-11s %-11s %s\n' \
+        'NAME' 'ADDR' 'HANDSHAKE' 'RX' 'TX' 'ENDPOINT'
+
+    local peer_file name addr pubkey endpoint hs rx tx
+    for peer_file in "${cfg_dir}"/wg0/clients/*.peer; do
+        [[ -e "${peer_file}" ]] || continue
+        name=$(basename "${peer_file}" .peer)
+        [[ -n "${only}" && "${name}" != "${only}" ]] && continue
+        addr=$(peer_field "${peer_file}" ADDR)
+        pubkey=$(peer_field "${peer_file}" PUBLIC_KEY)
+        IFS=$'\t' read -r endpoint hs rx tx < <(_bridge_peer_live "${dump0}" "${pubkey}")
+        printf '%-20s %-14s %-12s %-11s %-11s %s\n' \
+            "${name}" "${addr}" "$(_status_fmt_age "${hs}")" \
+            "$(_bridge_fmt_bytes "${rx}")" "$(_bridge_fmt_bytes "${tx}")" \
+            "$(_bridge_fmt_endpoint "${endpoint}")"
+    done
+}
+
+# JSON-ветка bridge_stats, вынесена ради читаемости самой команды.
+#
+# Каждое поле проверяется перед печатью, а не только при приёме. Причина та же,
+# что у list-clients: файлы в clients/ появляются не только через add-client, а
+# и из бэкапа или чужого rsync, и один клиент с кавычкой в имени ломает разбор
+# всего ответа, а не своей записи. Небезопасная запись пропускается с записью
+# в лог — бот получит валидный JSON без неё, а не мусор.
+_bridge_stats_json() {
+    local now="$1" portal_name="$2" portal_pubkey="$3"
+    local p_endpoint="$4" p_hs="$5" p_rx="$6" p_tx="$7"
+    local dump0="$8" only="$9"
+
+    local cfg_dir="${GROXY_DIR}/bridge"
+
+    printf '{"generated_at":%d,"portal":' "${now}"
+    if [[ -n "${portal_name}" ]] && _bridge_json_safe_name "${portal_name}"; then
+        printf '{"name":"%s","public_key":"%s","endpoint":%s,"latest_handshake":%s,"rx":%s,"tx":%s}' \
+            "${portal_name}" "$(_bridge_json_key "${portal_pubkey}")" \
+            "$(_bridge_json_endpoint "${p_endpoint}")" \
+            "$(_bridge_json_num "${p_hs}")" \
+            "$(_bridge_json_num "${p_rx}")" "$(_bridge_json_num "${p_tx}")"
+    else
+        printf 'null'
+    fi
+    printf ',"clients":['
+
+    local peer_file name addr pubkey endpoint hs rx tx sep=''
+    for peer_file in "${cfg_dir}"/wg0/clients/*.peer; do
+        [[ -e "${peer_file}" ]] || continue
+        name=$(basename "${peer_file}" .peer)
+        [[ -n "${only}" && "${name}" != "${only}" ]] && continue
+        if ! _bridge_json_safe_name "${name}"; then
+            log "warning: skipping '${peer_file}' — name is not a valid peer name"
+            continue
+        fi
+        addr=$(peer_field "${peer_file}" ADDR)
+        pubkey=$(peer_field "${peer_file}" PUBLIC_KEY)
+        if [[ ! "${addr}" =~ ^[0-9.]*$ ]] || [[ ! "${pubkey}" =~ ^[A-Za-z0-9+/=]*$ ]]; then
+            log "warning: skipping '${peer_file}' — field would not be safe in JSON"
+            continue
+        fi
+        IFS=$'\t' read -r endpoint hs rx tx < <(_bridge_peer_live "${dump0}" "${pubkey}")
+        printf '%s{"name":"%s","address":"%s","public_key":"%s","endpoint":%s,"latest_handshake":%s,"rx":%s,"tx":%s}' \
+            "${sep}" "${name}" "${addr}" "${pubkey}" \
+            "$(_bridge_json_endpoint "${endpoint}")" \
+            "$(_bridge_json_num "${hs}")" \
+            "$(_bridge_json_num "${rx}")" "$(_bridge_json_num "${tx}")"
+        sep=','
+    done
+    printf ']}\n'
+}
+
+# Имя годится в JSON только если проходит ту же проверку, что и на входе.
+_bridge_json_safe_name() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]]
+}
+
+# Ключ печатается только если это настоящий ключ WireGuard, иначе пустая
+# строка. Молча подставить мусор в поле нельзя: бот сопоставляет по ключу.
+_bridge_json_key() {
+    [[ "$1" =~ ^[A-Za-z0-9+/]{43}=$ ]] && printf '%s' "$1"
+}
+
+# Числовое поле. Всё, что не число, становится нулём, а не голым словом:
+# незакавыченный мусор сделал бы невалидным весь ответ.
+_bridge_json_num() {
+    [[ "$1" =~ ^[0-9]+$ ]] && printf '%s' "$1" || printf '0'
+}
+
+# Endpoint печатается как строка либо как null.
+#
+# «Нет endpoint» приходит в двух видах, и оба обязаны стать null. `wg show
+# dump` пишет `(none)` у пира, который есть в ядре, но ни разу не подключался —
+# проверено на живом узле. Прочерк ставит уже _bridge_peer_live, когда пира в
+# дампе нет вовсе. Заставлять вызывающего знать про обе особенности вывода wg
+# незачем.
+#
+# Скобки в `(none)` и так не проходят класс символов ниже, то есть отсеклись бы
+# сами. Проверка всё равно названа явно: молчаливая правильность держится на
+# том, что кто-то не добавит скобки в класс ради очередного формата адреса.
+#
+# Порядок символов в классе не косметика. Скобки нужны ради IPv6 — wg пишет
+# его как `[2001:db8::1]:51820`, — но `]` закрывает класс везде, кроме первой
+# позиции, а `-` вне последней читается как диапазон. Написанный «читаемо»
+# класс `[A-Za-z0-9.:_\[\]-]` обрывался на `\]` и требовал от строки
+# литерального `-]`, из-за чего любой живой endpoint становился null, а бот
+# видел бы всех клиентов ни разу не подключавшимися.
+_bridge_json_endpoint() {
+    local ep="$1"
+    if [[ "${ep}" != '-' && "${ep}" != '(none)' && "${ep}" =~ ^[]A-Za-z0-9.:_[-]+$ ]]; then
+        printf '"%s"' "${ep}"
+    else
+        printf 'null'
+    fi
+}
+
+# То же самое для таблицы: `(none)` из вывода wg не должен просачиваться в
+# глаза человеку рядом с прочерком, который ставим мы сами. Один вид «нет
+# данных» на весь вывод.
+_bridge_fmt_endpoint() {
+    case "$1" in
+        '-'|'(none)'|'') printf '-' ;;
+        *)               printf '%s' "$1" ;;
+    esac
+}

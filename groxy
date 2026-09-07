@@ -97,7 +97,11 @@ Subcommands:
                                                     --json: конфиг в поле config_b64.
                                                     Коды: 10 — имя занято, 11 — занята блокировка.
   remove-client <client-name> [--yes]               Удалить клиента. Отсутствующий — не ошибка.
+  rename-client <old-name> <new-name>               Переименовать. Клиент не переподключается.
+                                                    Код 10 — новое имя занято.
   list-clients [--json]                             Показать клиентов.
+  stats [<client-name>] [--json]                    Живое состояние: handshake, счётчики,
+                                                    endpoint, плюс туннель до портала.
 
   whitelist <update|reload|set-source>              Управление whitelist'ом доменов.
   geoip <update|set-source>                         Управление GeoIP-карв-аутом (ipset ru_cidrs).
@@ -235,7 +239,9 @@ cmd_bridge() {
         remove-portal)   bridge_remove_portal "$@" ;;
         add-client)      bridge_add_client "$@" ;;
         remove-client)   bridge_remove_client "$@" ;;
+        rename-client)   bridge_rename_client "$@" ;;
         list-clients)    bridge_list_clients "$@" ;;
+        stats)           bridge_stats "$@" ;;
         whitelist)       cmd_bridge_whitelist "$@" ;;
         geoip)           cmd_bridge_geoip "$@" ;;
         settings)        cmd_bridge_settings "$@" ;;
