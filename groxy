@@ -39,6 +39,8 @@ source "${LIB_DIR}/bridge_geoip.sh"
 source "${LIB_DIR}/bridge_settings.sh"
 # shellcheck source=lib/bridge_portals.sh
 source "${LIB_DIR}/bridge_portals.sh"
+# shellcheck source=lib/bridge_xray.sh
+source "${LIB_DIR}/bridge_xray.sh"
 # shellcheck source=lib/status.sh
 source "${LIB_DIR}/status.sh"
 # shellcheck source=lib/uninstall.sh
@@ -122,10 +124,13 @@ Usage: groxy bridge settings <subcommand> [args...]
 
 Subcommands:
   get                            Показать все 3 тоггла.
-  set <key> <on|off>             Включить/выключить feed.
+  set <key> <on|off>             Включить/выключить feed или классификатор.
                                  Keys: opencck (DNS cron-feed),
                                        custom  (DNS из custom.txt),
-                                       geoip   (RU CIDR через ru_cidrs ipset).
+                                       geoip   (RU CIDR через ru_cidrs ipset),
+                                       xray    (классификация по имени, не по адресу),
+                                       xraylog (журнал соединений Xray, по умолчанию off —
+                                                он пишет, куда ходил каждый клиент).
 EOF
 }
 

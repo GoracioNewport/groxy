@@ -154,6 +154,7 @@ class Bot:
             disk_total=disk_total,
             cpu_count=alerts.cpu_count(),
             resolver_answers=checks.resolver_answers(),
+            xray_alive=checks.xray_classifier_state(),
         )
 
         # Метрики портала — необязательная часть: reporter может быть не
@@ -169,11 +170,12 @@ class Bot:
         # числом иначе не по чему: снимки лежат в базе, а решения — нигде.
         log.info(
             "проверка: клиентов %d, портал %s, резолвер %s, метрики портала %s, "
-            "условий %d",
+            "классификатор %s, условий %d",
             len(snapshot.clients),
             snapshot.portal.name if snapshot.portal else "нет",
             "ок" if node.resolver_answers else "молчит",
             "есть" if portal_metrics else "нет",
+            {None: "выключен", True: "ок", False: "лежит"}[node.xray_alive],
             len(conditions),
         )
 

@@ -105,6 +105,22 @@ fresh = Snapshot(NOW, HEALTHY.portal, (client("new", 0),))
 check("тревоги нет", [], keys(evaluate(fresh, HEALTHY_NODE, T, NOW)))
 
 
+print("== классификатор Xray ==")
+# Выключенный классификатор — норма: узел классифицирует по меткам, как делал
+# всегда. Включённый и неработающий — остановка всего TCP и UDP клиентов, и это
+# отдельная тревога, а не строка в общей: разные поломки с разной срочностью.
+off = NodeState(0.1, 1, 4, 1, 30, 2, True, xray_alive=None)
+check("выключен — тревоги нет", [], keys(evaluate(HEALTHY, off, T, NOW)))
+alive = NodeState(0.1, 1, 4, 1, 30, 2, True, xray_alive=True)
+check("работает — тревоги нет", [], keys(evaluate(HEALTHY, alive, T, NOW)))
+dead = NodeState(0.1, 1, 4, 1, 30, 2, True, xray_alive=False)
+found_x = evaluate(HEALTHY, dead, T, NOW)
+check("лежит — тревога", ["xray"], keys(found_x))
+check("сказано, что стоит весь трафик", True, "стоит" in found_x[0].text)
+# Своим ключом, а не общим с резолвером: одна тревога гасила бы вторую.
+both = NodeState(0.1, 1, 4, 1, 30, 2, False, xray_alive=False)
+check("две поломки — две тревоги", ["dns", "xray"], keys(evaluate(HEALTHY, both, T, NOW)))
+
 print("== метрики портала ==")
 from groxy_bot.portal import PortalMetrics  # noqa: E402
 

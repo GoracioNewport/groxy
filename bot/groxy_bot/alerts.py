@@ -96,6 +96,9 @@ class NodeState:
     disk_total: int | None
     cpu_count: int
     resolver_answers: bool
+    # None означает «классификатор выключен» — тогда о нём и сообщать нечего.
+    # False — включён и не работает: это остановка всего TCP и UDP клиентов.
+    xray_alive: bool | None = None
 
 
 def evaluate(
@@ -141,6 +144,17 @@ def evaluate(
             Condition(
                 "dns",
                 "Резолвер на туннельном адресе не отвечает.",
+            )
+        )
+
+    # Отдельная тревога, а не строка в общей: падение классификатора
+    # останавливает весь TCP и UDP клиентов, тогда как падение резолвера лишь
+    # ломает имена. Это разные поломки с разной срочностью.
+    if node.xray_alive is False:
+        found.append(
+            Condition(
+                "xray",
+                "Классификатор Xray не работает. Весь TCP и UDP клиентов стоит.",
             )
         )
 
