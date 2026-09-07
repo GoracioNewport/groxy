@@ -58,7 +58,9 @@ Usage: groxy <command> [args...]
 
 Commands:
   init <portal|bridge> [flags]   Первичная установка роли.
-  apply                          Перегенерировать конфиги из /etc/groxy/.
+  apply [--dry-run]              Перегенерировать конфиги из /etc/groxy/.
+                                 --dry-run: показать разницу и ничего не менять.
+                                 Код 10 — изменения есть.
   status                         Показать роль, сервисы, peer'ы.
   backup [--keep=<n>]            Снять архив состояния и проверить распаковкой.
   backup list                    Показать снятые архивы.
@@ -187,6 +189,14 @@ cmd_init() {
 }
 
 cmd_apply() {
+    local arg
+    for arg in "$@"; do
+        case "${arg}" in
+            --dry-run) groxy_apply_dry_run; return $? ;;
+            *) die "apply: unknown argument '${arg}'" ;;
+        esac
+    done
+
     local role=''
     [[ -f "${GROXY_DIR}/role" ]] && role=$(<"${GROXY_DIR}/role")
     case "${role}" in

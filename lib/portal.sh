@@ -114,7 +114,7 @@ PresharedKey = ${PSK}
 AllowedIPs = ${BRIDGE_IP}/32
 EOF
         done
-    } | write_atomic /etc/wireguard/wg0.conf 600
+    } | write_atomic "${GROXY_RENDER_DIR:-${GROXY_WG_DIR}}/wg0.conf" 600
 }
 
 # Top-level: `groxy init portal [flags]`. Idempotent.

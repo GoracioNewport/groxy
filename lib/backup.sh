@@ -169,6 +169,82 @@ _backup_prune() {
                 | sort | head -n "$(( count - keep ))")
 }
 
+# `groxy apply --dry-run`. Показать, что изменил бы apply, и не менять ничего.
+#
+# Нужно потому, что цена apply разная и заранее неизвестна. На бридже он
+# перезапускает `wg1`, то есть стоит всем клиентам нескольких секунд
+# зарубежного трафика; если конфиг и так совпадает, платить эту цену незачем.
+# Узнать это можно было только запустив — то есть заплатив.
+#
+# Рендер идёт во временный каталог через GROXY_RENDER_DIR: те же функции, что
+# и в настоящем apply, а не отдельная их копия. Копия рано или поздно разошлась
+# бы с оригиналом, и dry-run начал бы показывать не то, что произойдёт.
+groxy_apply_dry_run() {
+    require_root
+    [[ -f "${GROXY_DIR}/role" ]] \
+        || die "groxy not initialised on this host"
+    local role
+    role=$(<"${GROXY_DIR}/role")
+
+    local tmp
+    tmp=$(mktemp -d) || die "cannot create a temporary directory"
+    # shellcheck disable=SC2064  # путь подставляется сейчас, и это намеренно
+    trap "rm -rf '${tmp}'" RETURN
+
+    local changed=0 name
+    case "${role}" in
+        portal)
+            GROXY_RENDER_DIR="${tmp}" portal_render_wg0_conf
+            _dry_run_diff "${tmp}/wg0.conf" "${GROXY_WG_DIR}/wg0.conf" || changed=1
+            ;;
+        bridge)
+            GROXY_RENDER_DIR="${tmp}" bridge_render_wg0_conf >/dev/null 2>&1
+            _dry_run_diff "${tmp}/wg0.conf" "${GROXY_WG_DIR}/wg0.conf" || changed=1
+            GROXY_RENDER_DIR="${tmp}" bridge_render_wg1_conf
+            _dry_run_diff "${tmp}/wg1.conf" "${GROXY_WG_DIR}/wg1.conf" || changed=1
+            ;;
+        *) die "unknown role '${role}'" ;;
+    esac
+
+    if (( changed )); then
+        log "apply would change the rendered config(s) above"
+        # Отдельный код, а не просто текст: dry-run зовут из скриптов, чтобы
+        # решить, нужно ли окно, и разбирать для этого вывод глазами — плохая
+        # опора.
+        return "${GROXY_EXIT_EXISTS}"
+    fi
+    log "apply would change nothing"
+    return 0
+}
+
+# Показать разницу между тем, что получилось бы, и тем, что лежит.
+# Возвращает 0, если файлы совпадают.
+#
+# Приватные ключи в diff не попадают: строки PrivateKey вырезаются из обеих
+# сторон. Иначе первый же вызов на узле, где ключ поменялся, напечатал бы его
+# в терминал и в журнал вызвавшего.
+_dry_run_diff() {
+    local candidate="$1" live="$2" label
+    label=$(basename "${live}")
+
+    if [[ ! -f "${live}" ]]; then
+        log "${label}: does not exist yet — apply would create it"
+        return 1
+    fi
+
+    local a b
+    a=$(sed 's/^PrivateKey = .*/PrivateKey = [скрыт]/' "${live}")
+    b=$(sed 's/^PrivateKey = .*/PrivateKey = [скрыт]/' "${candidate}")
+    if [[ "${a}" == "${b}" ]]; then
+        log "${label}: unchanged"
+        return 0
+    fi
+
+    log "${label}: would change —"
+    diff <(printf '%s\n' "${a}") <(printf '%s\n' "${b}") >&2 || true
+    return 1
+}
+
 # `groxy backup list`. Что лежит и насколько свежее.
 groxy_backup_list() {
     require_root

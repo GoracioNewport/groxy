@@ -196,7 +196,7 @@ EOF
         done
     } > "${tmp}"
 
-    write_atomic "${GROXY_WG_DIR}/wg0.conf" 600 < "${tmp}"
+    write_atomic "${GROXY_RENDER_DIR:-${GROXY_WG_DIR}}/wg0.conf" 600 < "${tmp}"
     rm -f "${tmp}"
     log "rendered wg0.conf with ${written_peers} peer(s)"
 }

@@ -74,7 +74,7 @@ bridge_render_wg1_conf() {
     local private_key
     private_key=$(<"${cfg_dir}/private.key")
 
-    write_atomic /etc/wireguard/wg1.conf 600 <<EOF
+    write_atomic "${GROXY_RENDER_DIR:-${GROXY_WG_DIR}}/wg1.conf" 600 <<EOF
 # Managed by groxy ${GROXY_VERSION}. Do not edit by hand —
 # changes will be overwritten on next 'groxy apply'.
 # Active portal: ${portal_name}
