@@ -141,9 +141,41 @@ bridge_xray_render_config >/dev/null 2>&1
 check "конфиг остался валиден" ok \
     "$(python3 -c 'import json,sys; json.load(open(sys.argv[1])); print("ok")' "${BRIDGE_XRAY_CONF}" 2>/dev/null)"
 check "кавычка отброшена" 0 "$(grep -c 'ev"il' "${BRIDGE_XRAY_CONF}")"
-check "имя без точки отброшено" 0 "$(grep -c 'нетточки' "${BRIDGE_XRAY_CONF}")"
+check "не-ASCII имя отброшено" 0 "$(grep -c 'нетточки' "${BRIDGE_XRAY_CONF}")"
 check "живые домены не потеряны" 1 "$(grep -c '"domain:ya.ru"' "${BRIDGE_XRAY_CONF}")"
 cp "${TMPROOT}/feed.bak" "${GROXY_DIR}/bridge/whitelist/opencck.txt"
+
+echo "== сборка конфига переживает set -e =="
+# Диспетчер работает с `set -euo pipefail`, а набор тестов — без `-e`, и это
+# уже дважды пропускало ошибки. Здесь конструкция `[[ ... ]] && printf` в
+# подстановке команд возвращала 1 при пустом custom.txt, и функция умирала
+# молча: конфиг не собирался, классификатор не включался, в журнале ни строки.
+rm -f "${GROXY_DIR}/bridge/whitelist/custom.txt"
+cat > "${TMPROOT}/probe-e.sh" <<'PROBE'
+set -euo pipefail
+source "${REPO}/lib/common.sh"
+source "${REPO}/lib/system.sh"
+source "${REPO}/lib/bridge_dns.sh"
+source "${REPO}/lib/bridge_xray.sh"
+die() { printf 'die: %s\n' "$*" >&2; exit 1; }
+bridge_xray_render_config
+PROBE
+# Остальные переменные уже экспортированы наверху и объявлены readonly при
+# загрузке модулей, поэтому передаётся только REPO.
+REPO="${REPO}" bash "${TMPROOT}/probe-e.sh" >/dev/null 2>&1; rc=$?
+check "конфиг собран без custom.txt" 0 "${rc}"
+
+echo "== правило на весь домен верхнего уровня не теряется =="
+# `*.ru` в custom.txt означает «весь .ru напрямую» — одна из самых крупных
+# частей классификации. Первая версия проверяльщика требовала точку в имени и
+# молча выбрасывала это правило. Поймано на живом узле.
+printf '# заголовок\n*.ru\n' > "${GROXY_DIR}/bridge/whitelist/custom.txt"
+bridge_xray_render_config >/dev/null 2>&1
+check "домен верхнего уровня попал в конфиг" 1 "$(grep -c '"domain:ru"' "${BRIDGE_XRAY_CONF}")"
+check "конфиг остался валиден" ok \
+    "$(python3 -c 'import json,sys; json.load(open(sys.argv[1])); print("ok")' "${BRIDGE_XRAY_CONF}" 2>/dev/null)"
+check "и российский список на месте" 1 "$(grep -c '"domain:ya.ru"' "${BRIDGE_XRAY_CONF}")"
+rm -f "${GROXY_DIR}/bridge/whitelist/custom.txt"
 
 echo "== переключатель включён =="
 bridge_settings_set xray on >/dev/null 2>&1
