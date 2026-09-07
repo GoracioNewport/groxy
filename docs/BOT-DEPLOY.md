@@ -199,13 +199,24 @@ chmod 640 /etc/groxy/bot/token
 
 ```
 systemd-run --quiet --wait --collect --uid=groxy-bot \
-  --property=ProtectSystem=strict --property=NoNewPrivileges=no \
+  --property=ProtectSystem=strict --property=ProtectHome=true \
+  --property=PrivateTmp=true --property=NoNewPrivileges=no \
   --property="ReadWritePaths=/var/lib/groxy-bot /etc/groxy /etc/wireguard /run" \
-  /usr/bin/sudo -n /opt/groxy/groxy bridge use-portal <активный>
+  --pipe /usr/bin/sudo -n /opt/groxy/groxy bridge use-portal <активный>
 ```
 
 Переключение на уже активный портал — пустая операция, но блокировку берёт,
 то есть проверяет ровно то, что ломалось.
+
+**`PrivateTmp=true` в списке обязателен**, хотя проверять он ничего не должен.
+Рендер `wg0.conf` собирается через `mktemp` в `/tmp`, а `ProtectSystem=strict`
+делает `/tmp` только для чтения; настоящий юнит спасает `PrivateTmp`, который
+подкладывает туда свою запись. Проба без него даёт ложный отказ
+«cannot create a temporary file for wg0.conf» — и хуже того, `add-client`
+успевает создать файл пира до этого места, так что за собой она оставляет
+профиль, которого нет ни в конфиге, ни в ядре. Лечится `remove-client`:
+отсутствующий клиент для него не ошибка, он всё равно доводит состояние до
+целого.
 
 **Резервный портал не имеет права судить о живости бота.** Бот пингует только
 активный портал — до резервного он через туннель не достаёт вовсе. Поэтому
