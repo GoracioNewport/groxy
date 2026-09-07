@@ -25,14 +25,34 @@ class ConfigError(Exception):
 
 
 @dataclass(frozen=True)
+class Paths:
+    """То, что нужно снапшоттеру. Секретов здесь нет намеренно.
+
+    Снимок раз в минуту не разговаривает с Telegram, поэтому и токена не
+    читает: программа, которая не держит секрета, не может его уронить в
+    журнал. Побочно снимки начинают собираться раньше, чем заведён бот.
+    """
+
+    groxy_bin: str
+    db_path: Path
+
+
+@dataclass(frozen=True)
 class Config:
     token: str
     allowed_chat_ids: frozenset[int]
     # Устройство, которым бот выходит наружу, когда прямой путь не работает.
     # Про выбор именно устройства — см. модуль net.
     tunnel_device: str
-    groxy_bin: str
-    db_path: Path
+    paths: Paths
+
+    @property
+    def groxy_bin(self) -> str:
+        return self.paths.groxy_bin
+
+    @property
+    def db_path(self) -> Path:
+        return self.paths.db_path
 
     def redacted_token(self) -> str:
         """Токен для лога: только id бота, секретная половина не печатается."""
@@ -78,6 +98,13 @@ def _parse_allowlist(text: str) -> frozenset[int]:
     return frozenset(ids)
 
 
+def load_paths() -> Paths:
+    return Paths(
+        groxy_bin=os.environ.get("GROXY_BIN", "/opt/groxy/groxy"),
+        db_path=Path(os.environ.get("GROXY_BOT_DB", "/var/lib/groxy-bot/history.db")),
+    )
+
+
 def load(directory: Path | None = None) -> Config:
     base = directory or DEFAULT_DIR
 
@@ -95,6 +122,5 @@ def load(directory: Path | None = None) -> Config:
         token=token,
         allowed_chat_ids=allowed,
         tunnel_device=os.environ.get("GROXY_BOT_DEVICE", "wg1"),
-        groxy_bin=os.environ.get("GROXY_BIN", "/opt/groxy/groxy"),
-        db_path=Path(os.environ.get("GROXY_BOT_DB", "/var/lib/groxy-bot/history.db")),
+        paths=load_paths(),
     )

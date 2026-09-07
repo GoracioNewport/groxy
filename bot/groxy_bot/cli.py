@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from typing import Any
@@ -23,9 +24,9 @@ from typing import Any
 EXIT_EXISTS = 10  # имя уже занято
 EXIT_BUSY = 11  # другая операция держит блокировку
 
-# Бот работает под своим пользователем, а CLI требует root: без этого пометка
-# трафика по пользователю не имела бы смысла. Правило в sudoers узкое, только
-# на `groxy bridge`.
+# Бот работает под своим пользователем, а CLI требует root: файлы пиров лежат
+# с правами 600, а `wg show` без root ничего не показывает. Правило в sudoers
+# узкое, только на перечисленные подкоманды `groxy bridge`.
 SUDO = "/usr/bin/sudo"
 
 DEFAULT_TIMEOUT = 60.0
@@ -80,8 +81,23 @@ class Groxy:
         self._binary = binary
         self._timeout = timeout
 
+    @staticmethod
+    def _prefix() -> list[str]:
+        """Через sudo — только когда мы не root.
+
+        Безусловный sudo тащил бы зависимость туда, где её не нужно: на узле,
+        где снимок запускает systemd от root, sudo может быть не установлен
+        вовсе — проверено на moscow-25000-01. А в обычном случае, когда бот
+        работает под groxy-bot, префикс на месте.
+
+        Решение принимается по фактическому uid, а не по настройке: настройка
+        разошлась бы с тем, кто на самом деле запустил процесс, и разошлась бы
+        молча.
+        """
+        return [] if os.geteuid() == 0 else [SUDO, "-n"]
+
     def _run(self, args: list[str]) -> str:
-        argv = [SUDO, "-n", self._binary, "bridge", *args]
+        argv = [*self._prefix(), self._binary, "bridge", *args]
         try:
             done = subprocess.run(
                 argv,
@@ -97,6 +113,17 @@ class Groxy:
             raise CliError(
                 f"команда не ответила за {self._timeout:.0f} с — состояние неизвестно",
                 returncode=-1,
+                stderr="",
+            ) from exc
+        except OSError as exc:
+            # Программу не удалось запустить вовсе: нет sudo, нет самого
+            # groxy, не хватает прав на файл. Без этой ветки наружу вылетал
+            # голый FileNotFoundError со стеком на пол-экрана — проверено на
+            # узле без установленного sudo. Вызывающий ждёт CliError и обязан
+            # его получить, чтобы отличить «не запустилось» от «упало».
+            raise CliError(
+                f"не удалось запустить {argv[0]}: {exc.strerror or exc}",
+                returncode=-2,
                 stderr="",
             ) from exc
 

@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Один снимок состояния бриджа в sqlite. Запускается таймером раз в минуту.
+
+Отдельная программа, а не поток внутри бота, по одной причине: бот может
+лежать — упал, перезапускается, ждёт Telegram, — а история как раз тогда и
+нужна. Таймер systemd переживает всё это сам, и разбираться в том, почему
+внутренний поток замолчал, не приходится.
+
+Код возврата 0 — снимок записан. Ненулевой означает, что записать не удалось;
+systemd отметит неудачу в журнале, а бот увидит дыру в истории по отсутствию
+строки за минуту.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from groxy_bot import cli, config, metrics  # noqa: E402
+from groxy_bot.store import NodeSample, PeerSample, Store  # noqa: E402
+
+log = logging.getLogger("groxy-snapshot")
+
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(message)s", stream=sys.stderr
+    )
+
+    # load_paths, а не load: снимку не нужен токен Telegram. Программа, не
+    # держащая секрета, не может его уронить в журнал, и снимки собираются
+    # ещё до того, как заведён бот.
+    cfg = config.load_paths()
+
+    groxy = cli.Groxy(cfg.groxy_bin)
+    try:
+        snapshot = groxy.stats()
+    except cli.CliError as exc:
+        # Занятая блокировка — не поломка: идёт чья-то изменяющая команда.
+        # Пропустить одну минуту дешевле, чем отметить в журнале отказ, на
+        # который потом кто-то пойдёт смотреть.
+        if exc.busy:
+            log.info("пропуск: другая операция держит блокировку")
+            return 0
+        log.error("groxy stats: %s (stderr: %s)", exc, exc.stderr)
+        return 1
+
+    mem_used, mem_total = metrics.memory()
+    disk_used, disk_total = metrics.disk()
+
+    node = NodeSample(
+        load1=metrics.load1(),
+        mem_used=mem_used,
+        mem_total=mem_total,
+        disk_used=disk_used,
+        disk_total=disk_total,
+        portal=snapshot.portal.name if snapshot.portal else None,
+        portal_handshake=snapshot.portal.latest_handshake if snapshot.portal else None,
+    )
+
+    peers = [
+        PeerSample(
+            public_key=c.public_key,
+            name=c.name,
+            address=c.address,
+            endpoint=c.endpoint,
+            latest_handshake=c.latest_handshake,
+            rx=c.rx,
+            tx=c.tx,
+        )
+        for c in snapshot.clients
+    ]
+
+    # Время берётся из снимка, а не текущее: между чтением и записью проходит
+    # заметная доля секунды, и подпись «снято в» должна означать момент
+    # чтения. Иначе разность двух снимков считается по неверному интервалу.
+    taken_at = snapshot.generated_at or int(time.time())
+
+    store = Store(cfg.db_path)
+    try:
+        store.record(taken_at, peers, node)
+        # Уборка идёт здесь же, а не отдельным таймером: она дешёвая, а лишний
+        # юнит — это лишнее место, где что-то может не запуститься и молча не
+        # чистить базу месяцами.
+        removed = store.prune(now=taken_at)
+        if removed:
+            log.info("снято %d пиров, убрано %d старых строк", len(peers), removed)
+    finally:
+        store.close()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

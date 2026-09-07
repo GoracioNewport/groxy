@@ -1,0 +1,31 @@
+[Unit]
+Description=groxy — снимок состояния бриджа в sqlite
+# Снимок без wg0 бессмысленен, но и ждать его не надо: таймер повторится через
+# минуту, а Requires= уронил бы юнит при каждой правке интерфейса.
+After=wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+User=groxy-bot
+Group=groxy-bot
+ExecStart=/opt/groxy/bot/bin/groxy-snapshot
+
+# Снимок читает /proc, зовёт groxy через sudo и пишет в свою базу. Больше
+# ничего ему не нужно, и всё лишнее закрыто.
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/groxy-bot
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+# NoNewPrivileges обязан быть выключен: без него sudo не поднимет привилегии,
+# а groxy требует root для чтения файлов пиров и вызова wg. Правило в sudoers
+# узкое, только на `groxy bridge`.
+
+[Install]
+WantedBy=multi-user.target
