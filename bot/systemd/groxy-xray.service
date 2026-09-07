@@ -1,0 +1,45 @@
+[Unit]
+Description=groxy — Xray как классификатор трафика клиентов
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
+Restart=always
+RestartSec=5s
+
+# От root, и это не лень. TPROXY требует IP_TRANSPARENT на слушающем сокете,
+# а исходящие соединения ставят SO_MARK, чтобы попасть в таблицу vpn2, — и то
+# и другое закрыто для непривилегированного процесса. Тот же SO_MARK у бота
+# отвечал EPERM, поэтому бот ходит наружу привязкой к устройству; здесь так
+# нельзя: устройство выбирается на каждое соединение отдельно.
+#
+# Взамен закрыто всё, что можно закрыть, не отняв этих двух прав.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+
+# Свой каталог под журнал решений: ProtectSystem=strict делает /var/log
+# доступным только на чтение, и без этой строки Xray не стартует вовсе с
+# «read-only file system». Поймано на обкатке — то же семейство ошибок, что
+# и с блокировкой у бота: песочница юнита действует на всё, что он открывает.
+LogsDirectory=groxy-xray
+LogsDirectoryMode=0750
+
+# Падение Xray останавливает ВЕСЬ TCP и UDP клиентов — в отличие от dnsmasq,
+# падение которого лишь ухудшает классификацию. Поэтому перезапуск без потолка
+# попыток: лучше бесконечно пытаться подняться, чем сдаться и оставить парк
+# без сети до прихода человека.
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target
