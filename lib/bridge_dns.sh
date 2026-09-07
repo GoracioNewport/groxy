@@ -399,6 +399,58 @@ bridge_whitelist_set_source() {
 # whose cache-clear forces clients to re-resolve and repopulate.
 #
 # Treats fetch failures as soft: keeps previous list intact, logs warning.
+# Сколько разбираемых доменов в файле фида.
+#
+# Считаются именно домены, а не строки. Разница решающая: сервер, отдавший
+# страницу с ошибкой вместо списка, возвращает сотни строк и ноль доменов —
+# прежняя проверка «файл непустой» такое пропускала, и в конфиг dnsmasq
+# уезжал пустой список, то есть весь зарубежный трафик разом переставал
+# распознаваться.
+_bridge_dns_count_domains() {
+    local file="$1" line count=0
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        [[ -n "$(_bridge_dns_domain_from_line "${line}")" ]] && count=$((count + 1))
+    done < "${file}"
+    printf '%d\n' "${count}"
+}
+
+# Абсолютный пол: живой фид отдаёт тысячи доменов, сотня — уже явно не он.
+readonly BRIDGE_WHITELIST_MIN_DOMAINS="${BRIDGE_WHITELIST_MIN_DOMAINS:-100}"
+
+# Насколько список вправе усохнуть за одно обновление. Фид меняется понемногу;
+# падение вдвое означает, что отдали не то, а не что интернет уполовинился.
+readonly BRIDGE_WHITELIST_MIN_RATIO="${BRIDGE_WHITELIST_MIN_RATIO:-50}"
+
+# Годится ли скачанный файл на замену действующему.
+#
+# Отказ здесь — не поломка: прежний список остаётся на месте и продолжает
+# работать. Поэтому все ветки возвращают 1 и пишут в лог, а не зовут die:
+# упасть посреди ежедневного таймера значило бы оставить узел без обновлений
+# и без объяснений.
+_bridge_whitelist_feed_ok() {
+    local candidate="$1" current="$2"
+    local got want
+
+    got=$(_bridge_dns_count_domains "${candidate}")
+    if (( got < BRIDGE_WHITELIST_MIN_DOMAINS )); then
+        log "warning: fetched list has ${got} usable domain(s), need at least" \
+            "${BRIDGE_WHITELIST_MIN_DOMAINS} — keeping previous"
+        return 1
+    fi
+
+    if [[ -f "${current}" ]]; then
+        want=$(_bridge_dns_count_domains "${current}")
+        if (( want > 0 && got * 100 < want * BRIDGE_WHITELIST_MIN_RATIO )); then
+            log "warning: fetched list shrank from ${want} to ${got} domain(s)," \
+                "more than allowed — keeping previous"
+            return 1
+        fi
+    fi
+
+    log "fetched list has ${got} usable domain(s)"
+    return 0
+}
+
 bridge_whitelist_update() {
     require_root
     # Запускается ежедневно по таймеру, то есть может совпасть с чем угодно.
@@ -437,9 +489,10 @@ bridge_whitelist_update() {
         return 0
     fi
 
-    local lines
-    lines=$(wc -l < "${tmp}")
-    log "fetched ${lines} lines"
+    if ! _bridge_whitelist_feed_ok "${tmp}" "${dir}/opencck.txt"; then
+        rm -f "${tmp}"
+        return 0
+    fi
 
     chmod 600 "${tmp}"
     mv -f "${tmp}" "${dir}/opencck.txt"
