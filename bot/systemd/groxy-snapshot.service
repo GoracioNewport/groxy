@@ -11,21 +11,24 @@ Group=groxy-bot
 ExecStart=/opt/groxy/bot/bin/groxy-snapshot
 
 # Снимок читает /proc, зовёт groxy через sudo и пишет в свою базу. Больше
-# ничего ему не нужно, и всё лишнее закрыто.
-NoNewPrivileges=no
+# ничего ему не нужно.
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/groxy-bot
-ProtectKernelTunables=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-RestrictRealtime=true
-LockPersonality=true
 
-# NoNewPrivileges обязан быть выключен: без него sudo не поднимет привилегии,
-# а groxy требует root для чтения файлов пиров и вызова wg. Правило в sudoers
-# узкое, только на `groxy bridge`.
+# Здесь нет ProtectKernelTunables, ProtectControlGroups, RestrictSUIDSGID,
+# RestrictRealtime и LockPersonality, хотя напрашиваются. Каждая из них
+# **неявно** включает NoNewPrivileges, а он запрещает sudo повышать права:
+# systemd отвечает «the no new privileges flag is set, which prevents sudo
+# from running as root», и снимок не снимается вовсе. Явное
+# NoNewPrivileges=no их не переспоривает — проверено на боевом бридже 07.09.
+#
+# Так что выбор был не между «защищённо» и «нет», а между защитой файловой
+# системы и правом позвать CLI. Оставлено то, что не конфликтует: корень
+# только на чтение, чужие домашние каталоги скрыты, /tmp свой, писать можно
+# ровно в свой каталог с базой.
+NoNewPrivileges=no
 
 [Install]
 WantedBy=multi-user.target
