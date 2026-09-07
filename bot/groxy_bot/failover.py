@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import sqlite3
 import time
@@ -62,6 +63,31 @@ class FailoverPolicy:
     # туда-сюда, когда лежит не портал, а что-то общее.
     cooldown_seconds: int = 1800
 
+    @classmethod
+    def from_env(cls) -> "FailoverPolicy":
+        """Пороги из окружения юнита.
+
+        Нужны настраиваемыми ради боевой проверки: со значениями по умолчанию
+        первый обрыв растянулся бы на шесть минут ожидания, и объявленное окно
+        пришлось бы держать открытым всё это время. Править ради проверки код
+        на боевом узле — худший из вариантов.
+        """
+
+        def num(name: str, default: int) -> int:
+            raw = os.environ.get(name)
+            if raw is None:
+                return default
+            try:
+                return int(raw)
+            except ValueError:
+                return default
+
+        return cls(
+            unhealthy_after_seconds=num("GROXY_FAILOVER_UNHEALTHY", 180),
+            switch_after_seconds=num("GROXY_FAILOVER_AFTER", 180),
+            cooldown_seconds=num("GROXY_FAILOVER_COOLDOWN", 1800),
+        )
+
 
 class Failover:
     def __init__(
@@ -75,7 +101,7 @@ class Failover:
         self._db.executescript(SCHEMA)
         self._groxy = groxy
         self._device = device
-        self._policy = policy or FailoverPolicy()
+        self._policy = policy or FailoverPolicy.from_env()
 
     # -- состояние ----------------------------------------------------------
 
