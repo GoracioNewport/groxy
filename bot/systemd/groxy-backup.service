@@ -1,0 +1,17 @@
+[Unit]
+Description=groxy — снять архив состояния и проверить распаковкой
+
+[Service]
+Type=oneshot
+ExecStart=/opt/groxy/groxy backup
+
+# От root: в состоянии лежат приватные ключи интерфейсов с правами 600, и
+# читать их больше некому. Песочница здесь скромнее, чем у бота: команда
+# берёт общую блокировку в /run и пишет архив в /var/backups/groxy.
+ProtectHome=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/groxy /run
+
+[Install]
+WantedBy=multi-user.target

@@ -43,6 +43,8 @@ source "${LIB_DIR}/bridge_portals.sh"
 source "${LIB_DIR}/status.sh"
 # shellcheck source=lib/uninstall.sh
 source "${LIB_DIR}/uninstall.sh"
+# shellcheck source=lib/backup.sh
+source "${LIB_DIR}/backup.sh"
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -58,6 +60,8 @@ Commands:
   init <portal|bridge> [flags]   Первичная установка роли.
   apply                          Перегенерировать конфиги из /etc/groxy/.
   status                         Показать роль, сервисы, peer'ы.
+  backup [--keep=<n>]            Снять архив состояния и проверить распаковкой.
+  backup list                    Показать снятые архивы.
   uninstall [--yes]              Снести установку (бэкап в /etc/groxy.bak.<ts>).
 
   portal <subcommand>            Управление peer'ами portal'а.
@@ -197,6 +201,15 @@ cmd_status() {
     cmd_status_real "$@"
 }
 
+# Бэкап состояния: снять архив или посмотреть, что уже снято.
+cmd_backup() {
+    local sub="${1:-}"
+    case "${sub}" in
+        list) shift; groxy_backup_list "$@" ;;
+        *)    groxy_backup "$@" ;;
+    esac
+}
+
 cmd_uninstall() {
     cmd_uninstall_real "$@"
 }
@@ -320,6 +333,7 @@ main() {
         init)        cmd_init "$@" ;;
         apply)       cmd_apply "$@" ;;
         status)      cmd_status "$@" ;;
+        backup)      cmd_backup "$@" ;;
         uninstall)   cmd_uninstall "$@" ;;
         portal)      cmd_portal "$@" ;;
         bridge)      cmd_bridge "$@" ;;
