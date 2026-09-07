@@ -13,7 +13,9 @@ import logging
 import time
 from dataclasses import dataclass
 
-from . import cli, config, net, telegram, ui
+import sqlite3
+
+from . import alerts, checks, cli, config, delivery, metrics, net, telegram, ui
 
 log = logging.getLogger("groxy-bot")
 
@@ -22,6 +24,11 @@ log = logging.getLogger("groxy-bot")
 # единственный способ узнать, что на узле что-то не так.
 RETRY_MIN_SECONDS = 5
 RETRY_MAX_SECONDS = 120
+
+# Как часто сверять правила алертов. Опрашивание возвращается не реже чем раз
+# в тридцать секунд, так что проверка успевает вовремя, а лишний юнит и второй
+# держатель токена не заводятся.
+ALERT_INTERVAL_SECONDS = 60
 
 
 @dataclass
@@ -38,6 +45,19 @@ class Bot:
         self._api = telegram.Telegram(cfg.token, cfg.tunnel_device)
         self._groxy = cli.Groxy(cfg.groxy_bin)
         self._pending: dict[int, Pending] = {}
+        self._thresholds = alerts.Thresholds.from_env()
+        self._delivery = delivery.Delivery(
+            api=self._api,
+            tunnel_device=cfg.tunnel_device,
+            chat_ids=cfg.allowed_chat_ids,
+        )
+        # Та же база, что у снимков: состояние алертов обязано пережить
+        # перезапуск бота, иначе после падения он перевыпустит всё действующее
+        # заново — десяток сообщений о том, что человек уже знает.
+        self._db = sqlite3.connect(str(cfg.db_path), isolation_level=None)
+        self._db.row_factory = sqlite3.Row
+        self._alerts = alerts.AlertState(self._db)
+        self._last_alert_check = 0.0
         # Список профилей, показанный в последний раз этому чату. Кнопки несут
         # порядковый номер, а не имя: в callback_data 64 байта, а имя бывает
         # до 63 символов, и длинное просто не влезло бы вместе с действием.
@@ -61,6 +81,10 @@ class Bot:
                 for update in self._api.poll():
                     self._dispatch(update)
                 delay = RETRY_MIN_SECONDS
+                # После разбора нажатий, а не до: человек, нажавший кнопку,
+                # ждёт ответа сейчас, а проверка правил может уйти на секунды
+                # в зонд DNS и вызов CLI.
+                self._check_alerts()
             except telegram.TelegramError as exc:
                 if exc.unauthorized:
                     # Токен не примут и через минуту. Выходим с ошибкой, пусть
@@ -75,6 +99,42 @@ class Bot:
                 log.warning("сеть (через %s): %s", exc.device or "напрямую", exc)
                 time.sleep(delay)
                 delay = min(delay * 2, RETRY_MAX_SECONDS)
+
+    # -- алерты -------------------------------------------------------------
+
+    def _check_alerts(self) -> None:
+        moment = time.monotonic()
+        if moment - self._last_alert_check < ALERT_INTERVAL_SECONDS:
+            return
+        self._last_alert_check = moment
+
+        try:
+            snapshot = self._groxy.stats()
+        except cli.CliError as exc:
+            # Не удалось прочитать состояние — сказать про алерты нечего.
+            # Молчим до следующего круга: сообщение «не смог проверить» раз в
+            # минуту хуже, чем ничего.
+            log.warning("проверка алертов пропущена: %s", exc)
+            return
+
+        mem_used, mem_total = metrics.memory()
+        disk_used, disk_total = metrics.disk()
+        node = alerts.NodeState(
+            load1=metrics.load1(),
+            mem_used=mem_used,
+            mem_total=mem_total,
+            disk_used=disk_used,
+            disk_total=disk_total,
+            cpu_count=alerts.cpu_count(),
+            resolver_answers=checks.resolver_answers(),
+        )
+
+        now = alerts.now_epoch()
+        conditions = alerts.evaluate(snapshot, node, self._thresholds, now)
+        problems, recovered = self._alerts.reconcile(conditions, self._thresholds, now)
+
+        for text in problems + recovered:
+            self._delivery.send(text)
 
     # -- разбор -------------------------------------------------------------
 
@@ -145,6 +205,8 @@ class Bot:
             self._show_list(chat_id, update.message_id)
         elif action == "summary":
             self._show_summary(chat_id, update.message_id)
+        elif action == "alerts":
+            self._show_alerts(chat_id, update.message_id)
         elif action == "add":
             self._pending[chat_id] = Pending("add")
             self._api.send(chat_id, "Пришлите имя профиля. Буквы, цифры, дефис, точка.")
@@ -197,6 +259,8 @@ class Bot:
             self._show_list(chat_id, None)
         elif command in ("stat", "summary"):
             self._show_summary(chat_id, None)
+        elif command in ("alerts", "alarm"):
+            self._show_alerts(chat_id, None)
         elif command == "add":
             parts = text.split(maxsplit=1)
             if len(parts) == 2:
@@ -229,6 +293,14 @@ class Bot:
     def _show_summary(self, chat_id: int, message_id: int | None) -> None:
         snapshot = self._groxy.stats()
         text = ui.summary(snapshot)
+        keyboard = ui.main_menu()
+        if message_id is None:
+            self._api.send(chat_id, text, keyboard=keyboard)
+        else:
+            self._api.edit(chat_id, message_id, text, keyboard=keyboard)
+
+    def _show_alerts(self, chat_id: int, message_id: int | None) -> None:
+        text = ui.alerts_text(self._alerts.active())
         keyboard = ui.main_menu()
         if message_id is None:
             self._api.send(chat_id, text, keyboard=keyboard)

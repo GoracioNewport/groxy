@@ -127,8 +127,27 @@ def main_menu() -> list[list[dict[str, str]]]:
             {"text": "Профили", "callback_data": "list"},
             {"text": "Сводка", "callback_data": "summary"},
         ],
-        [{"text": "Добавить профиль", "callback_data": "add"}],
+        [
+            {"text": "Тревоги", "callback_data": "alerts"},
+            {"text": "Добавить профиль", "callback_data": "add"},
+        ],
     ]
+
+
+def alerts_text(rows: Sequence, now: int | None = None) -> str:
+    """Действующие тревоги.
+
+    Пустой список — это содержательный ответ, а не отсутствие ответа: человек
+    спросил именно затем, чтобы узнать, всё ли тихо.
+    """
+    if not rows:
+        return "Действующих тревог нет."
+    moment = now if now is not None else int(time.time())
+    lines = [f"Действующих тревог: {len(rows)}", ""]
+    for row in rows:
+        lines.append(f"⚠️ {row['detail']}")
+        lines.append(f"   с {human_age(row['first_seen'], moment)}")
+    return "\n".join(lines)
 
 
 def clients_keyboard(clients: Sequence[Client], now: int | None = None) -> list[list[dict[str, str]]]:

@@ -63,12 +63,16 @@ class Telegram:
         self._device = device
         self._offset = 0
 
-    def _call(self, method: str, payload: dict[str, Any]) -> Any:
+    def _call(self, method: str, payload: dict[str, Any], device: str | None = ...) -> Any:
         path = f"/bot{self._token}/{method}"
         # Токен внутри пути. В текст ошибки путь не попадает никогда — иначе
         # первый же сбой сети записал бы токен в журнал.
         body = net.post_json(
-            API_HOST, path, payload, device=self._device, timeout=_NET_TIMEOUT
+            API_HOST,
+            path,
+            payload,
+            device=self._device if device is ... else device,
+            timeout=_NET_TIMEOUT,
         )
         if not body.get("ok"):
             raise TelegramError(
@@ -76,6 +80,15 @@ class Telegram:
                 body.get("error_code"),
             )
         return body.get("result")
+
+    def send_via(self, chat_id: int, text: str, device: str | None) -> None:
+        """Отправка заданным путём, в обход обычного.
+
+        Нужна доставке алертов: она перебирает пути и обязана уметь назвать
+        каждый явно, включая «напрямую». Обычная отправка ходит настроенным
+        путём и про лестницу ничего не знает.
+        """
+        self._call("sendMessage", {"chat_id": chat_id, "text": text}, device=device)
 
     def get_me(self) -> str:
         """Проверяет токен и возвращает @имя бота.
