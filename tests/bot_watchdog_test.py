@@ -81,9 +81,20 @@ with tempfile.TemporaryDirectory() as tmp:
     wd.main()
     check("молчит в отсрочку", [], sent)
 
-    print("== молчание дольше порога ==")
-    # Отсрочка истекла: подделываем first_run в прошлом.
+    print("== портал, которому бот никогда не пинговал ==")
+    # Резервный портал: бот пингует только активный, через туннель до
+    # резервного он не достаёт вовсе. Судить о живости бота такому порталу не
+    # по чему, и старая отметка от ручной пробы не должна превращаться в
+    # тревогу. Поймано на sweden, где следующий запуск закричал бы ложно.
     state.write_text(json.dumps({"first_run": now - 10_000}))
+    ping.write_text(f"{now - 5000}\n")
+    sent.clear()
+    wd.main()
+    check("молчит, раз пингов никогда не видел", [], sent)
+
+    print("== молчание дольше порога ==")
+    # Отсрочка истекла, и пинги раньше приходили: подделываем и то, и другое.
+    state.write_text(json.dumps({"first_run": now - 10_000, "seen_ping": True}))
     ping.write_text(f"{now - 5000}\n")
     sent.clear()
     wd.main()
@@ -120,7 +131,9 @@ with tempfile.TemporaryDirectory() as tmp:
     print("== битая отметка считается молчанием ==")
     # Обрыв записи оставил бы мусор. Считать его свежим пингом означало бы
     # молчать при мёртвом боте.
-    state.write_text(json.dumps({"first_run": now - 10_000, "quiet": False}))
+    state.write_text(
+        json.dumps({"first_run": now - 10_000, "quiet": False, "seen_ping": True})
+    )
     ping.write_text("не число")
     sent.clear()
     wd.main()
