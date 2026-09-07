@@ -142,7 +142,7 @@ class Bot:
 
         # Метрики портала — необязательная часть: reporter может быть не
         # установлен. Наблюдение за бриджом от этого не должно останавливаться.
-        portal_metrics = portal.fetch(self._cfg.tunnel_device)
+        portal_metrics = portal.fetch(snapshot.portal, self._cfg.tunnel_device)
 
         now = alerts.now_epoch()
         conditions = alerts.evaluate(

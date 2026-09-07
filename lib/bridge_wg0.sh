@@ -634,7 +634,8 @@ bridge_stats() {
 
     if (( want_json )); then
         _bridge_stats_json "${now}" "${portal_name}" "${PORTAL_PUBKEY}" \
-            "${p_endpoint}" "${p_hs}" "${p_rx}" "${p_tx}" "${dump0}" "${only}"
+            "${p_endpoint}" "${p_hs}" "${p_rx}" "${p_tx}" "${dump0}" "${only}" \
+            "${TUNNEL_PORTAL_IP}"
         return 0
     fi
 
@@ -671,13 +672,19 @@ _bridge_stats_json() {
     local now="$1" portal_name="$2" portal_pubkey="$3"
     local p_endpoint="$4" p_hs="$5" p_rx="$6" p_tx="$7"
     local dump0="$8" only="$9"
+    # Адрес портала внутри служебного туннеля. Нужен боту, чтобы прочитать
+    # reporter, и приходит именно отсюда, а не из чтения /etc/groxy напрямую:
+    # каталог bridge/ имеет права 700 — в нём приватный ключ, — и бот под своим
+    # пользователем туда не войдёт. Читать состояние — работа CLI.
+    local tunnel_address="${10}"
 
     local cfg_dir="${GROXY_DIR}/bridge"
 
     printf '{"generated_at":%d,"portal":' "${now}"
     if [[ -n "${portal_name}" ]] && _bridge_json_safe_name "${portal_name}"; then
-        printf '{"name":"%s","public_key":"%s","endpoint":%s,"latest_handshake":%s,"rx":%s,"tx":%s}' \
+        printf '{"name":"%s","public_key":"%s","tunnel_address":%s,"endpoint":%s,"latest_handshake":%s,"rx":%s,"tx":%s}' \
             "${portal_name}" "$(_bridge_json_key "${portal_pubkey}")" \
+            "$(_bridge_json_address "${tunnel_address}")" \
             "$(_bridge_json_endpoint "${p_endpoint}")" \
             "$(_bridge_json_num "${p_hs}")" \
             "$(_bridge_json_num "${p_rx}")" "$(_bridge_json_num "${p_tx}")"
@@ -721,6 +728,17 @@ _bridge_json_safe_name() {
 # строка. Молча подставить мусор в поле нельзя: бот сопоставляет по ключу.
 _bridge_json_key() {
     [[ "$1" =~ ^[A-Za-z0-9+/]{43}=$ ]] && printf '%s' "$1"
+}
+
+# IPv4-адрес строкой либо null. Проверка формой, а не «непустое»: значение
+# уходит боту, который подставит его в сетевой запрос, и мусор оттуда лучше
+# превратить в отсутствие адреса, чем в попытку соединиться неизвестно с чем.
+_bridge_json_address() {
+    if [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+        printf '"%s"' "$1"
+    else
+        printf 'null'
+    fi
 }
 
 # Числовое поле. Всё, что не число, становится нулём, а не голым словом:

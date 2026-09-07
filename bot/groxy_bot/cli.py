@@ -67,6 +67,10 @@ class PortalLink:
     latest_handshake: int
     rx: int
     tx: int
+    # Адрес портала внутри служебного туннеля — по нему бот читает reporter.
+    # Приходит из CLI, а не из чтения /etc/groxy: каталог bridge/ имеет права
+    # 700, в нём приватный ключ, и бот под своим пользователем туда не войдёт.
+    tunnel_address: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +165,7 @@ class Groxy:
                 latest_handshake=int(portal_raw.get("latest_handshake", 0)),
                 rx=int(portal_raw.get("rx", 0)),
                 tx=int(portal_raw.get("tx", 0)),
+                tunnel_address=portal_raw.get("tunnel_address"),
             )
 
         clients = tuple(

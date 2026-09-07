@@ -1,8 +1,13 @@
 """Чтение метрик активного портала через служебный туннель.
 
-Адрес портала внутри туннеля берётся из состояния groxy — того же файла
-`portal.env`, по которому собран `wg1`. Зашивать 10.77.77.1 значило бы завести
-второй источник правды о том, где портал.
+Адрес портала приходит из `groxy bridge stats --json`, а не из чтения
+`/etc/groxy` напрямую. Первая версия читала файлы состояния сама и молча ничего
+не находила: каталог `bridge/` имеет права 700 — в нём приватный ключ
+интерфейса, — и бот под своим пользователем туда просто не входит. Отказ
+выглядел как «портал не настроен», то есть как исправная работа.
+
+Это тот же принцип, что и во всём остальном: состояние читает CLI, у бота нет
+второго пути к нему.
 """
 
 from __future__ import annotations
@@ -10,13 +15,12 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 from . import net
+from .cli import PortalLink
 
 log = logging.getLogger(__name__)
 
-GROXY_DIR = Path(os.environ.get("GROXY_DIR", "/etc/groxy"))
 REPORTER_PORT = int(os.environ.get("GROXY_REPORTER_PORT", "9101"))
 
 
@@ -32,38 +36,6 @@ class PortalMetrics:
     conntrack_count: int | None
     conntrack_max: int | None
     uptime: int | None
-
-
-def _read_env_field(path: Path, key: str) -> str | None:
-    """Достаёт одно поле KEY=VALUE, не исполняя файл.
-
-    То же решение, что и в CLI: peer- и portal-файлы — это состояние, а не
-    код, и `source` над ними однажды дал бы им переопределять переменные
-    читающего.
-    """
-    try:
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            name, sep, value = line.partition("=")
-            if sep and name.strip() == key:
-                return value.strip()
-    except OSError:
-        return None
-    return None
-
-
-def active_portal_address() -> tuple[str, str] | None:
-    """Имя активного портала и его адрес внутри туннеля."""
-    try:
-        name = (GROXY_DIR / "bridge" / "current-portal").read_text().strip()
-    except OSError:
-        return None
-    if not name:
-        return None
-    env = GROXY_DIR / "bridge" / "portals" / name / "portal.env"
-    address = _read_env_field(env, "TUNNEL_PORTAL_IP")
-    if not address:
-        return None
-    return name, address
 
 
 def ping(address: str, device: str, timeout: float = 5.0) -> bool:
@@ -85,7 +57,9 @@ def ping(address: str, device: str, timeout: float = 5.0) -> bool:
         return False
 
 
-def fetch(device: str, timeout: float = 8.0) -> PortalMetrics | None:
+def fetch(
+    link: PortalLink | None, device: str, timeout: float = 8.0
+) -> PortalMetrics | None:
     """Метрики активного портала, или None, если не ответил.
 
     Запрос уходит с привязкой к устройству туннеля. Иначе он не уйдёт вовсе:
@@ -97,27 +71,29 @@ def fetch(device: str, timeout: float = 8.0) -> PortalMetrics | None:
     и наблюдение обязано работать и без него, потому что установлен он будет
     не раньше, чем до портала дойдут руки.
     """
-    found = active_portal_address()
-    if found is None:
+    if link is None or not link.tunnel_address:
         return None
-    name, address = found
+
+    ping(link.tunnel_address, device)
 
     try:
         data = net.get_json(
-            address, REPORTER_PORT, "/metrics", device=device, timeout=timeout
+            link.tunnel_address,
+            REPORTER_PORT,
+            "/metrics",
+            device=device,
+            timeout=timeout,
         )
     except net.TransportError as exc:
-        log.info("портал %s не отдал метрики: %s", name, exc)
+        log.info("портал %s не отдал метрики: %s", link.name, exc)
         return None
 
     def num(key: str):
         value = data.get(key)
         return value if isinstance(value, (int, float)) else None
 
-    ping(address, device)
-
     return PortalMetrics(
-        name=name,
+        name=link.name,
         load1=num("load1"),
         cpu_count=int(data.get("cpu_count") or 1),
         mem_used=num("mem_used"),

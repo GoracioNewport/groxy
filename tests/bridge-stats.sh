@@ -143,6 +143,11 @@ if (( have_python )); then
     check "имя портала" nether "$(jq_field portal name <<<"${out}")"
     check "handshake портала сырой эпохой" "${NOW_HS}" "$(jq_field portal latest_handshake <<<"${out}")"
     check "счётчики портала" 4096 "$(jq_field portal rx <<<"${out}")"
+    # Адрес портала внутри туннеля нужен боту, чтобы прочитать reporter.
+    # Читать его самому из /etc/groxy бот не может: каталог bridge/ имеет
+    # права 700, там приватный ключ, и отказ выглядел бы как «портал не
+    # настроен» — то есть как исправная работа.
+    check "адрес портала в туннеле отдан" 10.77.77.1 "$(jq_field portal tunnel_address <<<"${out}")"
     check "endpoint подключённого клиента" '192.0.2.5:1234' "$(jq_field clients 0 endpoint <<<"${out}")"
     # IPv6 wg пишет со скобками. Класс символов, пропускающий IPv4 и
     # спотыкающийся на скобках, отдал бы null и показал живого клиента
