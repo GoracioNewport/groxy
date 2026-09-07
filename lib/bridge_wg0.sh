@@ -680,7 +680,19 @@ _bridge_stats_json() {
 
     local cfg_dir="${GROXY_DIR}/bridge"
 
-    printf '{"generated_at":%d,"portal":' "${now}"
+    # Состояние классификатора отдаётся здесь, а не читается ботом из
+    # settings.env. Каталог bridge/ имеет права 700 — там приватный ключ, — и
+    # бот под своим пользователем туда не входит: чтение молча не удавалось, а
+    # выглядело это как «классификатор выключен», то есть как норма. Ровно эта
+    # же ошибка уже была с адресом портала. Состояние читает CLI.
+    local classifier='off'
+    local XRAY_CLASSIFIER=''
+    if [[ -f "${GROXY_DIR}/bridge/settings.env" ]]; then
+        XRAY_CLASSIFIER=$(peer_field "${GROXY_DIR}/bridge/settings.env" XRAY_CLASSIFIER)
+        [[ "${XRAY_CLASSIFIER}" == 'on' ]] && classifier='on'
+    fi
+
+    printf '{"generated_at":%d,"classifier":"%s","portal":' "${now}" "${classifier}"
     if [[ -n "${portal_name}" ]] && _json_safe_name "${portal_name}"; then
         printf '{"name":"%s","public_key":"%s","tunnel_address":%s,"endpoint":%s,"latest_handshake":%s,"rx":%s,"tx":%s}' \
             "${portal_name}" "$(_json_key "${portal_pubkey}")" \

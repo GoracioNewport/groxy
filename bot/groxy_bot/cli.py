@@ -90,6 +90,10 @@ class Snapshot:
     generated_at: int
     portal: PortalLink | None
     clients: tuple[Client, ...]
+    # 'on' или 'off'. Приходит из CLI, а не из чтения /etc/groxy: каталог
+    # bridge/ имеет права 700, и попытка прочесть его ботом молча не удавалась,
+    # выглядя как «выключен» — то есть как норма.
+    classifier: str = "off"
 
 
 class Groxy:
@@ -193,7 +197,10 @@ class Groxy:
             for item in data.get("clients", [])
         )
         return Snapshot(
-            generated_at=int(data["generated_at"]), portal=portal, clients=clients
+            generated_at=int(data["generated_at"]),
+            portal=portal,
+            clients=clients,
+            classifier=str(data.get("classifier", "off")),
         )
 
     def add_client(self, name: str) -> tuple[str, str]:

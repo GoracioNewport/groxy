@@ -148,6 +148,10 @@ if (( have_python )); then
     # права 700, там приватный ключ, и отказ выглядел бы как «портал не
     # настроен» — то есть как исправная работа.
     check "адрес портала в туннеле отдан" 10.77.77.1 "$(jq_field portal tunnel_address <<<"${out}")"
+    # Состояние классификатора отдаёт CLI, а не бот чтением /etc/groxy:
+    # каталог bridge/ имеет права 700, и попытка прочесть его молча не
+    # удавалась, выглядя как «выключен» — то есть как норма.
+    check "состояние классификатора отдано" off "$(jq_field classifier <<<"${out}")"
     check "endpoint подключённого клиента" '192.0.2.5:1234' "$(jq_field clients 0 endpoint <<<"${out}")"
     # IPv6 wg пишет со скобками. Класс символов, пропускающий IPv4 и
     # спотыкающийся на скобках, отдал бы null и показал живого клиента
@@ -174,6 +178,16 @@ if (( have_python )); then
 else
     skipped=$((skipped + 6))
 fi
+
+echo "== включённый классификатор виден в снимке =="
+printf 'XRAY_CLASSIFIER=on\n' > "${GROXY_DIR}/bridge/settings.env"
+out=$(bridge_stats --json 2>/dev/null)
+if (( have_python )); then
+    check "классификатор on" on "$(jq_field classifier <<<"${out}")"
+else
+    skipped=$((skipped + 1))
+fi
+rm -f "${GROXY_DIR}/bridge/settings.env"
 
 echo "== stats по одному клиенту =="
 out=$(bridge_stats beta --json 2>/dev/null)

@@ -154,7 +154,7 @@ class Bot:
             disk_total=disk_total,
             cpu_count=alerts.cpu_count(),
             resolver_answers=checks.resolver_answers(),
-            xray_alive=checks.xray_classifier_state(),
+            xray_alive=checks.xray_classifier_state(snapshot.classifier),
         )
 
         # Метрики портала — необязательная часть: reporter может быть не

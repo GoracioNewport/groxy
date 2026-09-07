@@ -3,6 +3,16 @@ Description=groxy — Xray как классификатор трафика кл
 After=network-online.target wg-quick@wg0.service
 Wants=network-online.target
 
+# Падение Xray останавливает ВЕСЬ TCP и UDP клиентов — в отличие от dnsmasq,
+# падение которого лишь ухудшает классификацию. Поэтому перезапуск без потолка
+# попыток: лучше бесконечно пытаться подняться, чем сдаться и оставить парк
+# без сети до прихода человека.
+#
+# Секция именно [Unit]. В [Service] этот ключ systemd на Debian 12 не знает и
+# молча игнорирует — то есть защита не работала бы, а предупреждение видно
+# только в `systemd-analyze verify`.
+StartLimitIntervalSec=0
+
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
@@ -45,12 +55,6 @@ CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 # и с блокировкой у бота: песочница юнита действует на всё, что он открывает.
 LogsDirectory=groxy-xray
 LogsDirectoryMode=0750
-
-# Падение Xray останавливает ВЕСЬ TCP и UDP клиентов — в отличие от dnsmasq,
-# падение которого лишь ухудшает классификацию. Поэтому перезапуск без потолка
-# попыток: лучше бесконечно пытаться подняться, чем сдаться и оставить парк
-# без сети до прихода человека.
-StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target

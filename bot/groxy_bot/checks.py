@@ -63,29 +63,20 @@ def resolver_answers(
     return (data[3] & 0x0F) == 0
 
 
-def xray_classifier_state(
-    settings_path: str = "/etc/groxy/bridge/settings.env",
-    unit: str = "groxy-xray",
-) -> bool | None:
+def xray_classifier_state(enabled: str, unit: str = "groxy-xray") -> bool | None:
     """Работает ли классификатор, или None, если он выключен настройкой.
 
     Различать обязательно. Выключенный классификатор — это норма: узел
     классифицирует по меткам, как делал всегда. Включённый и неработающий —
     это остановка всего TCP и UDP клиентов, и молчать об этом нельзя.
 
-    Настройка читается по одной строке, а не через `source`: файл состояния не
-    должен исполняться ради одного значения.
+    Состояние переключателя приходит аргументом из снимка CLI, а не читается
+    здесь из /etc/groxy. Первая версия читала файл сама и всегда получала
+    отказ: каталог bridge/ имеет права 700, бот туда не входит, — а выглядело
+    это как «выключен», то есть как норма. Та же ошибка уже была с адресом
+    портала, и правило то же: состояние читает CLI.
     """
-    try:
-        for line in open(settings_path, encoding="utf-8", errors="replace"):
-            name, sep, value = line.partition("=")
-            if sep and name.strip() == "XRAY_CLASSIFIER":
-                if value.strip() != "on":
-                    return None
-                break
-        else:
-            return None
-    except OSError:
+    if enabled != "on":
         return None
     return service_active(unit)
 
