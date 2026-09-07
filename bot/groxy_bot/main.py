@@ -148,6 +148,19 @@ class Bot:
         conditions = alerts.evaluate(
             snapshot, node, self._thresholds, now, portal=portal_metrics
         )
+        # Одна строка на круг о том, что увидел наблюдатель. Молчащий
+        # наблюдатель неотличим от сломанного, а разбирать его работу задним
+        # числом иначе не по чему: снимки лежат в базе, а решения — нигде.
+        log.info(
+            "проверка: клиентов %d, портал %s, резолвер %s, метрики портала %s, "
+            "условий %d",
+            len(snapshot.clients),
+            snapshot.portal.name if snapshot.portal else "нет",
+            "ок" if node.resolver_answers else "молчит",
+            "есть" if portal_metrics else "нет",
+            len(conditions),
+        )
+
         problems, recovered = self._alerts.reconcile(conditions, self._thresholds, now)
 
         for text in problems + recovered:
