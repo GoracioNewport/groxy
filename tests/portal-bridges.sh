@@ -138,6 +138,35 @@ check "принято без подмены" 0 "${rc}"
 check "имя файла не изменилось" 1 \
     "$(find "${GROXY_DIR}/portal/bridges" -name 'evil.peer' | wc -l | tr -d ' ')"
 
+echo "== роль пира видна в списке =="
+# Роль ничего не меняет механически — пир один и тот же. Она нужна глазам:
+# именно неразличимость записей оставила в реестрах biosentivo и
+# moscow-1000-white, про которые никто не помнил, что это.
+make_peer plain 10.77.77.5 "$(fake_key 5)"
+cat > "${GROXY_DIR}/portal/bridges/laptop.peer" <<EOF
+# peer "laptop" (system)
+PSK=$(fake_key 602)
+BRIDGE_IP=10.77.77.6
+ROLE=system
+PUBLIC_KEY=$(fake_key 6)
+EOF
+out=$(portal_list_bridges 2>/dev/null)
+check "system помечен" 1 "$(grep -c 'laptop .*system' <<<"${out}")"
+# Записи, заведённые до появления роли, — бриджи: так и было, пока другого
+# вида пиров не существовало.
+check "запись без роли считается бриджем" 1 "$(grep -c 'plain .*bridge' <<<"${out}")"
+
+echo "== роль переживает активацию =="
+# accept-bridge переписывает файл целиком; без сохранения роль терялась бы
+# ровно в момент, когда пир становится настоящим.
+( portal_accept_bridge laptop --pubkey="$(fake_key 6)" ) >/dev/null 2>&1
+check "роль на месте" system \
+    "$(peer_field "${GROXY_DIR}/portal/bridges/laptop.peer" ROLE)"
+
+echo "== недопустимая роль отвергается =="
+( portal_add_bridge whatever --role=выдумка ) >/dev/null 2>&1; rc=$?
+check "отказ" 1 "${rc}"
+
 echo
 echo "прошло: ${pass}, упало: ${fail}"
 rm -rf "${TMPROOT}"

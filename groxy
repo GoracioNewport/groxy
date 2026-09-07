@@ -82,7 +82,8 @@ usage_portal() {
 Usage: groxy portal <subcommand> [args...]
 
 Subcommands:
-  add-bridge <bridge-name>                          Создать peer и напечатать portal profile.
+  add-peer <name> [--role=bridge|system]            Создать peer и напечатать portal profile.
+  add-bridge <name>                                 Псевдоним add-peer с --role=bridge.
   accept-bridge <bridge-name> --pubkey=<key>        Активировать peer по pubkey'ю bridge'а.
   remove-bridge <bridge-name> [--yes]               Удалить peer.
   list-bridges                                      Показать зарегистрированные bridge'и.
@@ -232,7 +233,9 @@ cmd_portal() {
     local sub="${1:-}"
     shift || true
     case "${sub}" in
-        add-bridge)      portal_add_bridge "$@" ;;
+        # add-peer — основное имя, add-bridge остаётся псевдонимом: команда
+        # звалась так с самого начала и стоит в инструкциях.
+        add-peer|add-bridge) portal_add_bridge "$@" ;;
         accept-bridge)   portal_accept_bridge "$@" ;;
         remove-bridge)   portal_remove_bridge "$@" ;;
         list-bridges)    portal_list_bridges "$@" ;;
