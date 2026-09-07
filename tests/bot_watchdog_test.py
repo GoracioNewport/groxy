@@ -99,8 +99,9 @@ with tempfile.TemporaryDirectory() as tmp:
     sent.clear()
     wd.main()
     check("одно сообщение", 1, len(sent))
-    check("сказано, что бот не отвечает", True, "не отвечает" in sent[0])
-    check("названа причина, почему пишет портал", True, "watchdog" in sent[0])
+    check("сказано, что бот молчит", True, "молчит" in sent[0])
+    check("названо, кто пишет", True, "watchdog" in sent[0])
+    check("одной строкой", 1, len(sent[0].strip().splitlines()))
 
     print("== о том же не кричат каждые пять минут ==")
     sent.clear()

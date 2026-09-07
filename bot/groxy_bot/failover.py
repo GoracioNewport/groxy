@@ -170,6 +170,13 @@ class Failover:
         watchdog не счёл бота умершим, и отсчёт «нездоров» сбросить. Иначе
         человек нажимает кнопку, а через пятнадцать минут получает тревогу о
         мёртвом боте от портала, с которого сам же ушёл.
+
+        А вот «откуда ушли» здесь наоборот **стирается**. Это поле значит
+        «портал, с которого нас вынудили уйти», и живёт ровно затем, чтобы
+        сообщить, когда он оживёт. Добровольный уход такого долга не создаёт:
+        записав его, бот предлагал вернуться на портал, с которого человек
+        только что осознанно ушёл. Ровно это и случилось 07.09 сразу после
+        возврата на основной портал.
         """
         try:
             portals = self._groxy.list_portals()
@@ -179,9 +186,9 @@ class Failover:
         current = next((p for p in portals if p.active), None)
         if current and current.tunnel_portal_ip and current.name != target:
             self._standby(current.tunnel_portal_ip)
-            self._set("switched_from", current.name)
         self._set("last_switch_at", int(time.time()))
         self._clear("unhealthy_since")
+        self._clear("switched_from")
         self._clear("return_offered")
 
     # -- решение ------------------------------------------------------------
@@ -249,8 +256,8 @@ class Failover:
             if self._get("no_candidate_reported") != current:
                 self._set("no_candidate_reported", current)
                 return (
-                    f"🚨 Портал {current} не отвечает, а переключиться некуда: "
-                    f"второго зарегистрированного портала нет."
+                    f"🚨 {current} не отвечает. Переключиться некуда: "
+                    f"второго портала нет."
                 )
             return None
         self._clear("no_candidate_reported")
@@ -260,10 +267,7 @@ class Failover:
             if self._get("no_alive_reported") != current:
                 self._set("no_alive_reported", current)
                 names = ", ".join(p.name for p in candidates)
-                return (
-                    f"🚨 Портал {current} не отвечает, и запасные тоже: {names}. "
-                    f"Похоже, дело не в портале."
-                )
+                return f"🚨 {current} не отвечает, запасные тоже: {names}."
             return None
         self._clear("no_alive_reported")
 
@@ -279,8 +283,8 @@ class Failover:
         except cli.CliError as exc:
             log.error("переключение не удалось: %s", exc)
             return (
-                f"🚨 Портал {current} не отвечает, а переключиться на "
-                f"{target.name} не вышло: {exc}. Нужны руки."
+                f"🚨 {current} не отвечает, переключение на {target.name} "
+                f"не удалось: {exc}"
             )
 
         self._set("last_switch_at", now)
@@ -288,14 +292,8 @@ class Failover:
         self._clear("unhealthy_since")
         self._clear("return_offered")
 
-        detail = "ни одного handshake" if age is None else f"handshake {age // 60} мин"
-        return (
-            f"⚠️ Переключился на резервный портал {target.name}.\n\n"
-            f"Причина: {current} не отвечал — {detail}. Клиенты потеряли "
-            f"зарубежный трафик на несколько секунд.\n\n"
-            f"Обратно автоматически не вернусь: второй обрыв стоит того же, а "
-            f"выбрать для него время лучше вам."
-        )
+        detail = "handshake не было" if age is None else f"handshake {age // 60} мин"
+        return f"⚠️ Портал: {current} → {target.name}. Причина: {detail}."
 
     def _maybe_offer_return(self, snapshot: cli.Snapshot, now: int) -> str | None:
         """Сообщает, что прежний портал ожил, — один раз.
@@ -318,10 +316,6 @@ class Failover:
             return None
 
         self._set("return_offered", previous)
-        return (
-            f"ℹ️ Прежний портал {previous} снова отвечает.\n\n"
-            f"Сейчас работает {snapshot.portal.name if snapshot.portal else '?'}. "
-            f"Вернуться можно кнопкой в меню — это ещё несколько секунд обрыва "
-            f"у всех, поэтому выберите время."
-        )
+        active = snapshot.portal.name if snapshot.portal else "?"
+        return f"ℹ️ {previous} снова отвечает. Активен {active}."
 

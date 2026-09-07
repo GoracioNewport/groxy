@@ -216,21 +216,12 @@ def main() -> int:
     hostname = socket.gethostname()
     if quiet and not was_quiet:
         detail = "ни одного пинга" if age is None else f"молчит {age // 60} мин"
-        text = (
-            f"🚨 Бот на бридже не отвечает: {detail}.\n\n"
-            f"Сообщает watchdog с портала {hostname}. Похоже, лёг сам бридж "
-            f"или бот на нём — иначе это сообщение прислал бы он.\n\n"
-            f"Другая возможная причина: бот переключился на другой портал и "
-            f"перестал пинговать этот."
-        )
+        text = f"🚨 Бот на бридже молчит: {detail}. Пишет watchdog с {hostname}."
         for chat_id in chat_ids:
             send(token, chat_id, text)
         state["quiet"] = True
     elif not quiet and was_quiet:
-        text = (
-            f"✅ Бот на бридже снова на связи (пинг {age} с назад).\n\n"
-            f"Сообщает watchdog с портала {hostname}."
-        )
+        text = f"✅ Бот на бридже снова на связи, пинг {age} с назад. Watchdog {hostname}."
         for chat_id in chat_ids:
             send(token, chat_id, text)
         state["quiet"] = False

@@ -93,10 +93,12 @@ f.evaluate(snapshot(NOW - 400), NOW)
 message = f.evaluate(snapshot(NOW - 600), NOW + POLICY.switch_after_seconds)
 check("переключились", ["sweden"], groxy.switched)
 check("сообщено", True, message is not None and "sweden" in message)
-check("названа причина", True, "не отвечал" in message)
-# Возврат автоматом не делается: он стоит того же обрыва, а вынужденным не
-# является.
-check("сказано, что обратно сам не вернётся", True, "не вернусь" in message)
+# Сообщение короткое: откуда, куда, почему. Без объяснений про то, как
+# устроен фейловер, — их читают один раз, а сообщение приходит в тревожный
+# момент.
+check("названа причина", True, "handshake" in message)
+check("названы оба портала", True, "nether" in message and "sweden" in message)
+check("без лишних абзацев", 1, len(message.strip().splitlines()))
 
 print("== выздоровление до выдержки отменяет переключение ==")
 groxy = FakeGroxy()
@@ -134,14 +136,14 @@ f = make(groxy, alive=False)
 f.evaluate(snapshot(NOW - 400), NOW)
 message = f.evaluate(snapshot(NOW - 600), NOW + POLICY.switch_after_seconds)
 check("не переключились на мёртвый", [], groxy.switched)
-check("сообщено, что дело не в портале", True, message is not None and "не в портале" in message)
+check("названы запасные", True, message is not None and "sweden" in message)
 
 print("== переключение сорвалось ==")
 groxy = FakeGroxy(fail_switch=True)
 f = make(groxy)
 f.evaluate(snapshot(NOW - 400), NOW)
 message = f.evaluate(snapshot(NOW - 600), NOW + POLICY.switch_after_seconds)
-check("сказано, что нужны руки", True, message is not None and "руки" in message)
+check("сказано, что переключение не удалось", True, message is not None and "не удалось" in message)
 
 print("== портала нет вовсе ==")
 # Автопереключением это не лечится: непонятно, с чего переключать.
@@ -156,7 +158,8 @@ f.evaluate(snapshot(NOW - 600), NOW + POLICY.switch_after_seconds)
 after = NOW + POLICY.switch_after_seconds + 10
 message = f.evaluate(snapshot(after - 10, name="sweden"), after)
 check("предложено вернуться", True, message is not None and "снова отвечает" in message)
-check("сказано про цену", True, "секунд обрыва" in message)
+check("сказано, что активно сейчас", True, "sweden" in message)
+check("одной строкой", 1, len(message.strip().splitlines()))
 repeat = f.evaluate(snapshot(after - 5, name="sweden"), after + 60)
 check("предложение не повторяется", None, repeat)
 
@@ -170,6 +173,23 @@ f._standby = lambda ip: warned.append(ip)
 f.announce_manual_switch("sweden")
 check("прежний портал предупреждён", ["10.77.77.1"], warned)
 check("пауза от мотания взведена", True, f._int("last_switch_at") is not None)
+
+print("== после ручного возврата не предлагают уйти обратно ==")
+# Случилось на живом узле 07.09: вернули владельца на основной портал, а бот
+# через минуту предложил вернуться на резервный, с которого только что ушли.
+# «Откуда ушли» значит «откуда вынудили», и добровольный уход такого долга не
+# создаёт.
+groxy = FakeGroxy()
+f = make(groxy)
+f.evaluate(snapshot(NOW - 400), NOW)
+f.evaluate(snapshot(NOW - 600), NOW + POLICY.switch_after_seconds)  # ушли на sweden
+f.announce_manual_switch("nether")  # человек вернул обратно кнопкой
+after = NOW + POLICY.switch_after_seconds + 30
+check(
+    "предложения вернуться нет",
+    None,
+    f.evaluate(snapshot(after - 10, name="nether"), after),
+)
 
 print()
 print(f"прошло: {passed}, упало: {failed}")

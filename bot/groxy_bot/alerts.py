@@ -124,15 +124,15 @@ def evaluate(
             found.append(
                 Condition(
                     "portal_handshake",
-                    f"С порталом {snapshot.portal.name} не было ни одного handshake.",
+                    f"С порталом {snapshot.portal.name} не было handshake.",
                 )
             )
         elif age > thresholds.portal_handshake_seconds:
             found.append(
                 Condition(
                     "portal_handshake",
-                    f"Handshake с порталом {snapshot.portal.name} протух: "
-                    f"{age // 60} мин. Зарубежный трафик, скорее всего, не идёт.",
+                    f"Handshake с порталом {snapshot.portal.name}: "
+                    f"{age // 60} мин.",
                 )
             )
 
@@ -140,8 +140,7 @@ def evaluate(
         found.append(
             Condition(
                 "dns",
-                "Резолвер на туннельном адресе не отвечает. У клиентов не "
-                "работают имена — ни российские, ни зарубежные.",
+                "Резолвер на туннельном адресе не отвечает.",
             )
         )
 
@@ -165,8 +164,7 @@ def evaluate(
             found.append(
                 Condition(
                     "load",
-                    f"Нагрузка {node.load1:.1f} на {node.cpu_count} ядра — "
-                    f"узел не справляется.",
+                    f"Нагрузка {node.load1:.1f} на {node.cpu_count} ядра.",
                 )
             )
 
@@ -187,7 +185,7 @@ def evaluate(
         found.append(
             Condition(
                 "clients_silent",
-                f"Профилей молчит больше {thresholds.client_silent_days} дней: "
+                f"Молчат дольше {thresholds.client_silent_days} дней: "
                 f"{len(silent)} — {names}{more}.",
             )
         )
@@ -211,9 +209,9 @@ def _portal_conditions(portal, thresholds: Thresholds) -> list[Condition]:
             found.append(
                 Condition(
                     "portal_conntrack",
-                    f"Портал {portal.name}: таблица соединений занята на "
+                    f"Портал {portal.name}: conntrack занят на "
                     f"{used * 100:.0f}% ({portal.conntrack_count} из "
-                    f"{portal.conntrack_max}). Новые соединения начнут рваться.",
+                    f"{portal.conntrack_max}).",
                 )
             )
 
