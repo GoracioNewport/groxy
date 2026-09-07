@@ -176,6 +176,60 @@ class Telegram:
             if "message is not modified" not in exc.description:
                 raise
 
+    def send_photo(self, chat_id: int, image: bytes, caption: str = "") -> None:
+        """Картинка. Для QR это единственный годный вид: телефон снимает её
+        камерой, а текстовый конфиг пришлось бы сохранять в файл и
+        импортировать руками.
+        """
+        self._send_file(
+            "sendPhoto", "photo", chat_id, image, "qr.png", "image/png", caption
+        )
+
+    def send_document(
+        self, chat_id: int, content: bytes, filename: str, caption: str = ""
+    ) -> None:
+        """Файл. Конфиг удобнее отдать файлом, чем текстом: его сразу
+        подхватывает клиент WireGuard на настольной машине.
+        """
+        self._send_file(
+            "sendDocument",
+            "document",
+            chat_id,
+            content,
+            filename,
+            "application/octet-stream",
+            caption,
+        )
+
+    def _send_file(
+        self,
+        method: str,
+        field: str,
+        chat_id: int,
+        content: bytes,
+        filename: str,
+        content_type: str,
+        caption: str,
+    ) -> None:
+        fields = {"chat_id": str(chat_id)}
+        if caption:
+            fields["caption"] = caption
+        body = net.post_multipart(
+            API_HOST,
+            f"/bot{self._token}/{method}",
+            fields,
+            field,
+            filename,
+            content,
+            content_type,
+            device=self._device,
+            timeout=_NET_TIMEOUT,
+        )
+        if not body.get("ok"):
+            raise TelegramError(
+                str(body.get("description", "без описания")), body.get("error_code")
+            )
+
     def answer_callback(self, callback_id: str, text: str = "") -> None:
         """Гасит «часики» на кнопке. Без этого Telegram крутит их 30 секунд."""
         self._call("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})

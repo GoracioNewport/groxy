@@ -24,6 +24,7 @@ from . import (
     metrics,
     net,
     portal,
+    qr,
     telegram,
     ui,
 )
@@ -399,18 +400,39 @@ class Bot:
         self._send_config(chat_id, name, conf)
 
     def _send_config(self, chat_id: int, name: str, conf: str) -> None:
-        # Конфиг уходит одним сообщением и нигде не сохраняется: в нём
-        # приватный ключ, которого нет больше нигде. В журнал он тоже не
-        # попадает — записывается только имя.
+        # Конфиг нигде не сохраняется: в нём приватный ключ, которого нет
+        # больше нигде. В журнал он тоже не попадает — записывается имя.
         log.info("выдан конфиг профиля '%s'", name)
-        self._api.send(chat_id, f"Конфиг «{name}»:")
-        self._api.send(chat_id, conf)
-        self._api.send(
-            chat_id,
-            "Сохраните его сейчас: приватный ключ отдаётся один раз и на узле "
-            "не хранится. Показать его повторно нельзя — только перевыпустить, "
-            "и тогда старое устройство отвалится.",
+
+        warning = (
+            f"Конфиг «{name}». Сохраните его сейчас: приватный ключ отдаётся "
+            "один раз и на узле не хранится. Показать повторно нельзя — только "
+            "перевыпустить, и тогда старое устройство отвалится."
         )
+
+        # Порядок такой: сначала файл, потом QR, потом текст. Файл подхватывает
+        # настольный клиент, QR снимает телефон, текст остаётся на случай, если
+        # не сработало ни то, ни другое, — и он же гарантирует, что человек
+        # получит конфиг, даже если qrencode на узле снесли.
+        sent_any = False
+        try:
+            self._api.send_document(chat_id, conf.encode(), f"{name}.conf", warning)
+            sent_any = True
+        except (net.TransportError, telegram.TelegramError) as exc:
+            log.warning("файл конфига не ушёл: %s", exc)
+
+        image = qr.render(conf)
+        if image is not None:
+            try:
+                self._api.send_photo(chat_id, image, f"QR для «{name}»")
+            except (net.TransportError, telegram.TelegramError) as exc:
+                log.warning("QR не ушёл: %s", exc)
+
+        if not sent_any:
+            # Файл не дошёл — отдаём текстом, иначе человек остался бы с
+            # созданным профилем и без единого способа им воспользоваться.
+            self._api.send(chat_id, warning)
+            self._api.send(chat_id, conf)
 
     # -- вспомогательное ----------------------------------------------------
 

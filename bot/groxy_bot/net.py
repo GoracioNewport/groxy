@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import socket
 import ssl
 from typing import Any
@@ -155,6 +156,80 @@ def post_json(
             device,
         ) from exc
 
+    if not isinstance(parsed, dict):
+        raise TransportError(f"ожидался объект JSON, пришло {type(parsed).__name__}", device)
+    return parsed
+
+
+def post_multipart(
+    host: str,
+    path: str,
+    fields: dict[str, str],
+    file_field: str,
+    filename: str,
+    content: bytes,
+    content_type: str,
+    *,
+    device: str | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict[str, Any]:
+    """POST multipart/form-data с одним файлом. Ответ разбирается как JSON.
+
+    Нужен для отправки картинки и файла в Telegram: JSON-запрос их не несёт.
+    Собирается вручную — в стандартной библиотеке готового сборщика нет, а
+    тащить ради тридцати строк зависимость на боевой узел не стоит.
+
+    Граница берётся из случайных байт, а не из времени или счётчика: она
+    обязана не встретиться внутри содержимого, а содержимое здесь — конфиг
+    клиента и картинка, то есть данные, на которые мы не смотрим.
+    """
+    boundary = "----groxy" + os.urandom(16).hex()
+    parts: list[bytes] = []
+
+    for name, value in fields.items():
+        parts.append(
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n".encode()
+        )
+
+    parts.append(
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{file_field}"; '
+        f'filename="{filename}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n".encode()
+    )
+    parts.append(content)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+
+    conn = _BoundHTTPSConnection(
+        host, device=device, timeout=timeout, context=ssl.create_default_context()
+    )
+    try:
+        conn.request(
+            "POST",
+            path,
+            body=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(body)),
+            },
+        )
+        response = conn.getresponse()
+        raw = response.read()
+        status = response.status
+    except OSError as exc:
+        raise TransportError(f"{type(exc).__name__}: {exc}", device) from exc
+    finally:
+        conn.close()
+
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        raise TransportError(
+            f"ответ не разобрался как JSON (HTTP {status}, {len(raw)} байт)", device
+        ) from exc
     if not isinstance(parsed, dict):
         raise TransportError(f"ожидался объект JSON, пришло {type(parsed).__name__}", device)
     return parsed

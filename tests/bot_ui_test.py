@@ -150,10 +150,18 @@ class FakeApi:
     def __init__(self):
         self.sent = []
         self.answered = []
+        self.documents = []
+        self.photos = []
 
     def send(self, chat_id, text, keyboard=None):
         self.sent.append((chat_id, text))
         return 1
+
+    def send_document(self, chat_id, content, filename, caption=""):
+        self.documents.append((filename, content, caption))
+
+    def send_photo(self, chat_id, image, caption=""):
+        self.photos.append((image, caption))
 
     def edit(self, chat_id, message_id, text, keyboard=None):
         self.sent.append((chat_id, text))
@@ -249,10 +257,31 @@ bot._dispatch(Update(1, chat_id=754067951, user_id=754067951, text=None,
 order = [c[0] for c in bot._groxy.calls if c[0] in ("remove", "add")]
 # Порядок обязателен: add-client при занятом имени отказывает отдельным кодом.
 check("сначала удаление, потом создание", ["remove", "add"], order)
+check("конфиг ушёл файлом", 1, len(bot._api.documents))
+check("имя файла по профилю", "alpha.conf", bot._api.documents[0][0])
 check(
     "человека предупредили, что ключ отдаётся один раз",
     True,
-    any("один раз" in text for _, text in bot._api.sent),
+    "один раз" in bot._api.documents[0][2],
+)
+
+print("== конфиг всё равно доходит, если файл не ушёл ==")
+# Человек остался бы с созданным профилем и без единого способа им
+# воспользоваться: ключ отдаётся один раз, второй попытки не будет.
+from groxy_bot import net as net_module  # noqa: E402
+
+bot = make_bot()
+bot._shown[754067951] = list(SNAPSHOT.clients)
+bot._api.send_document = lambda *a, **k: (_ for _ in ()).throw(
+    net_module.TransportError("timed out", "wg1")
+)
+bot._dispatch(Update(1, chat_id=754067951, user_id=754067951, text=None,
+                     callback_data="reissue!:0", callback_id="c1", message_id=5))
+check("конфиг отдан текстом", True, any("[Interface]" in t for _, t in bot._api.sent))
+check(
+    "предупреждение тоже",
+    True,
+    any("один раз" in t for _, t in bot._api.sent),
 )
 
 print()
