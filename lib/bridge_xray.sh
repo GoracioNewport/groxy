@@ -214,6 +214,61 @@ bridge_xray_remove_rules() {
     ip route flush table "${BRIDGE_XRAY_TABLE}" 2>/dev/null || true
 }
 
+# Дождаться, пока инбаунд действительно начнёт слушать.
+#
+# Без ожидания перехват включался бы раньше готовности, и первые соединения
+# клиентов уходили бы в никуда. Двадцать попыток по четверти секунды: Xray с
+# девятнадцатью тысячами правил поднимается заметно дольше пустого.
+_xray_wait_listening() {
+    local i
+    for ((i = 0; i < 20; i++)); do
+        ss -lnt 2>/dev/null | grep -q "127.0.0.1:${BRIDGE_XRAY_PORT}" && return 0
+        sleep 0.25
+    done
+    return 1
+}
+
+# `groxy bridge xray-rules <up|down>`. Ставит или снимает перехват.
+#
+# Отдельной командой потому, что её зовёт сам юнит через ExecStartPost и
+# ExecStopPost. Правила перехвата — состояние времени выполнения: после
+# перезагрузки их никто не восстановил бы до следующего `apply`, и
+# классификатор молча выродился бы в прежнюю классификацию по меткам. Хуже
+# всего, что тревога на живость при этом молчит: Xray-то работает, просто
+# трафик мимо него не идёт.
+bridge_xray_rules() {
+    require_root
+    # Общую блокировку намеренно НЕ берёт. Её зовёт ExecStartPost, а тот
+    # запускается из systemctl restart, который в свою очередь вызывается из
+    # bridge_xray_apply — а он блокировку уже держит. Попытка взять её здесь
+    # означала бы тридцать секунд ожидания и отказ на ровном месте.
+    # Команда ставит только правила фаервола и маршрутизации, состояние groxy
+    # не трогает, так что защищать нечего.
+    local action="${1:-}"
+    local SUBNET=''
+    if [[ -f "${GROXY_DIR}/bridge/wg0/server.env" ]]; then
+        # shellcheck source=/dev/null
+        source "${GROXY_DIR}/bridge/wg0/server.env"
+    fi
+
+    case "${action}" in
+        up)
+            [[ -n "${SUBNET}" ]] || die "wg0 subnet unknown — cannot install the rules"
+            _xray_wait_listening \
+                || die "xray is not listening on ${BRIDGE_XRAY_PORT} — refusing to redirect traffic"
+            bridge_xray_ensure_rules "${SUBNET}"
+            log "tproxy rules installed"
+            ;;
+        down)
+            bridge_xray_remove_rules
+            log "tproxy rules removed"
+            ;;
+        *)
+            die "usage: groxy bridge xray-rules <up|down>"
+            ;;
+    esac
+}
+
 # Привести всё к состоянию, заданному переключателем.
 #
 # Зовётся из apply и из обновления фида. Порядок при включении важен: сначала
@@ -238,15 +293,7 @@ bridge_xray_apply() {
     systemctl enable groxy-xray >/dev/null 2>&1 || true
     systemctl restart groxy-xray || die "failed to start groxy-xray"
 
-    # Ждём, пока сокет действительно поднимется. Без ожидания перехват
-    # включался бы раньше готовности, и первые соединения клиентов уходили
-    # в никуда.
-    local i
-    for ((i = 0; i < 20; i++)); do
-        ss -lnt 2>/dev/null | grep -q "127.0.0.1:${BRIDGE_XRAY_PORT}" && break
-        sleep 0.25
-    done
-    ss -lnt 2>/dev/null | grep -q "127.0.0.1:${BRIDGE_XRAY_PORT}" \
+    _xray_wait_listening \
         || die "groxy-xray is not listening on ${BRIDGE_XRAY_PORT} — refusing to redirect traffic"
 
     bridge_xray_ensure_rules "${subnet}"

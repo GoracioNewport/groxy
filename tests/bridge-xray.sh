@@ -197,6 +197,19 @@ check "отказ" 1 "${rc}"
 check "перехват не поставлен" 0 "$(count_calls "-j TPROXY" iptables)"
 ss() { printf 'LISTEN 0 4096 127.0.0.1:%s 0.0.0.0:*\n' "${BRIDGE_XRAY_PORT}"; }
 
+echo "== правила ставятся и снимаются отдельной командой =="
+# Её зовёт сам юнит: правила перехвата — состояние времени выполнения, и после
+# перезагрузки узла их никто не восстановил бы до следующего apply.
+reset_calls
+bridge_xray_rules up >/dev/null 2>&1
+check "перехват поставлен" 2 "$(count_calls "-j TPROXY" iptables)"
+reset_calls
+bridge_xray_rules down >/dev/null 2>&1
+check "цепочка снята" 1 "$(count_calls "-X GROXY_TPROXY" iptables)"
+check "правило маршрутизации снято" 1 "$(count_calls "rule del fwmark" ip)"
+( bridge_xray_rules unknown-action ) >/dev/null 2>&1; rc=$?
+check "неизвестное действие отвергнуто" 1 "${rc}"
+
 echo "== битый конфиг не подменяет рабочий =="
 # Xray с битым конфигом не стартует вовсе, а он к этому моменту единственный
 # путь для всего TCP и UDP клиентов.

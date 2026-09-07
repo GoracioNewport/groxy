@@ -273,6 +273,7 @@ cmd_bridge() {
         rename-client)   bridge_rename_client "$@" ;;
         list-clients)    bridge_list_clients "$@" ;;
         stats)           bridge_stats "$@" ;;
+        xray-rules)      bridge_xray_rules "$@" ;;
         whitelist)       cmd_bridge_whitelist "$@" ;;
         geoip)           cmd_bridge_geoip "$@" ;;
         settings)        cmd_bridge_settings "$@" ;;
